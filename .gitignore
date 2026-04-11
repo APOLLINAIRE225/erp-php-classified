@@ -1,0 +1,41 @@
+# Dépendances
+/vendor/
+/node_modules/
+
+# Uploads utilisateurs (images produits, documents RH, etc.)
+/uploads/products/*.jpg
+/uploads/products/*.jpeg
+/uploads/products/*.png
+/uploads/products/*.webp
+/hr/uploads/
+/auth/uploads/
+
+# Fichiers de configuration sensibles
+*.env
+config.local.php
+db_config.php
+
+# Sauvegardes base de données
+*.sql
+*.sql.gz
+backups/
+
+# Cache / fichiers temporaires
+*.log
+*.cache
+/cache/
+/tmp/
+
+# Fichiers IDE & OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Token de setup (ne pas exposer)
+dashboard/agent_erp/SETUP_TOKEN.txt
+
+# Dossier Claude Code (paramètres locaux)
+.claude/

@@ -1,0 +1,21 @@
+{
+  "name": "Portail Employe",
+  "short_name": "Employe",
+  "description": "Portail mobile RH pour le pointage et le suivi employe.",
+  "start_url": "/hr/employee_portal.php",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "portrait",
+  "background_color": "#0f172a",
+  "theme_color": "#10b981",
+  "categories": ["business", "productivity"],
+  "icons": [
+    {
+      "src": "/hr/employee-app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "name": "ESPERANCEH²O Stock",
+  "short_name": "Stock H²O",
+  "description": "Application stock ESPERANCEH²O pour desktop et mobile.",
+  "start_url": "/stock/stock_tracking.php",
+  "scope": "/stock/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "standalone", "minimal-ui"],
+  "orientation": "portrait",
+  "background_color": "#0f172a",
+  "theme_color": "#10b981",
+  "categories": ["business", "productivity"],
+  "icons": [
+    {
+      "src": "/stock/stock-app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/stock/stock-app-icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/stock/stock-app-icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

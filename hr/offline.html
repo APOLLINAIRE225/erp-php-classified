@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hors ligne</title>
+<style>
+body{
+    margin:0;
+    min-height:100vh;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    padding:24px;
+    background:#0f172a;
+    color:#e2e8f0;
+    font-family:Inter,system-ui,sans-serif;
+}
+.box{
+    max-width:420px;
+    text-align:center;
+    background:#1e293b;
+    border:1px solid rgba(148,163,184,.18);
+    border-radius:20px;
+    padding:28px;
+}
+.icon{
+    font-size:48px;
+    margin-bottom:14px;
+}
+h1{
+    margin:0 0 10px;
+    font-size:24px;
+}
+p{
+    margin:0;
+    color:#94a3b8;
+    line-height:1.7;
+}
+.snapshot{
+    margin-top:18px;
+    text-align:left;
+    background:#0f172a;
+    border:1px solid rgba(148,163,184,.14);
+    border-radius:16px;
+    padding:18px;
+}
+.row{
+    display:flex;
+    justify-content:space-between;
+    gap:12px;
+    padding:10px 0;
+    border-bottom:1px solid rgba(148,163,184,.1);
+}
+.row:last-child{
+    border-bottom:none;
+}
+.muted{
+    color:#94a3b8;
+}
+</style>
+</head>
+<body>
+<div class="box">
+    <div class="icon">📴</div>
+    <h1>Portail hors ligne</h1>
+    <p>La connexion internet est indisponible. Reconnectez-vous pour reprendre le pointage et synchroniser vos donnees.</p>
+    <div class="snapshot" id="snapshotBox" style="display:none">
+        <div class="row"><strong>Employé</strong><span id="snapName" class="muted">--</span></div>
+        <div class="row"><strong>Statut</strong><span id="snapStatus" class="muted">--</span></div>
+        <div class="row"><strong>Heures aujourd'hui</strong><span id="snapHours" class="muted">--</span></div>
+        <div class="row"><strong>Salaire estimé</strong><span id="snapSalary" class="muted">--</span></div>
+        <div class="row"><strong>Dernière sync</strong><span id="snapUpdated" class="muted">--</span></div>
+    </div>
+</div>
+<script>
+try {
+    const raw = localStorage.getItem('employeePortalSnapshot');
+    if (raw) {
+        const data = JSON.parse(raw);
+        document.getElementById('snapshotBox').style.display = 'block';
+        document.getElementById('snapName').textContent = data.name || '--';
+        document.getElementById('snapStatus').textContent = data.status || '--';
+        document.getElementById('snapHours').textContent = data.hours || '--';
+        document.getElementById('snapSalary').textContent = data.salary || '--';
+        document.getElementById('snapUpdated').textContent = data.updated_at || '--';
+    }
+} catch (e) {}
+</script>
+</body>
+</html>

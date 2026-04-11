@@ -1,0 +1,378 @@
+html,
+body {
+    max-width: 100%;
+    overflow-x: hidden;
+}
+
+img,
+svg,
+canvas,
+iframe {
+    max-width: 100%;
+    height: auto;
+}
+
+.nav-bar,
+.nav-menu {
+    scrollbar-width: none;
+}
+
+.nav-bar::-webkit-scrollbar,
+.nav-menu::-webkit-scrollbar,
+.tbl-wrap::-webkit-scrollbar,
+.table-container::-webkit-scrollbar {
+    display: none;
+}
+
+@media (max-width: 900px) {
+    .nav-bar,
+    .nav-menu {
+        overflow-x: auto !important;
+        overflow-y: hidden;
+        flex-wrap: nowrap !important;
+        white-space: nowrap;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .nav-menu li,
+    .nb,
+    .nav-link {
+        flex: 0 0 auto;
+    }
+
+    .kpi-strip,
+    .stats-grid,
+    .cards-grid,
+    .f-grid,
+    .fgrid,
+    .fgrid3,
+    .fgrid4,
+    .form-grid,
+    .form-grid-add,
+    .grid,
+    .grid-2,
+    .split,
+    .split-2,
+    .chart-grid,
+    .cmp-grid,
+    .sum-row,
+    .f-row,
+    .f-row3,
+    .f-row4 {
+        grid-template-columns: minmax(0, 1fr) !important;
+    }
+}
+
+@media (max-width: 768px) {
+    body {
+        font-size: 14px;
+    }
+
+    body,
+    .container,
+    .wrap {
+        overflow-x: hidden;
+    }
+
+    .container,
+    .wrap {
+        width: 100%;
+        max-width: 100%;
+        padding-left: 12px !important;
+        padding-right: 12px !important;
+        margin-left: auto;
+        margin-right: auto;
+    }
+
+    .navbar {
+        height: auto;
+        min-height: 66px;
+    }
+
+    .nav-container,
+    .topbar,
+    .ph,
+    .filter-info,
+    .export-bar,
+    .admin-banner,
+    .confirm-btns,
+    .mbtns,
+    .modal-btns,
+    .actions {
+        flex-wrap: wrap;
+    }
+
+    .nav-container {
+        padding: 12px 14px;
+        gap: 12px;
+        align-items: flex-start;
+    }
+
+    .nav-logo {
+        font-size: 20px !important;
+    }
+
+    .nav-logo i {
+        font-size: 24px !important;
+    }
+
+    .nav-menu {
+        width: 100%;
+        padding-bottom: 2px;
+        gap: 8px;
+    }
+
+    .nav-link,
+    .nb {
+        padding: 10px 14px !important;
+        font-size: 12px !important;
+        min-height: 42px;
+    }
+
+    .topbar,
+    .ph {
+        align-items: flex-start !important;
+    }
+
+    .user-badge,
+    .clock-d,
+    .clock-sub {
+        width: 100%;
+    }
+
+    .user-badge {
+        justify-content: center;
+        text-align: center;
+    }
+
+    .clock-d {
+        font-size: 24px !important;
+        letter-spacing: 2px !important;
+    }
+
+    .brand,
+    .brand-txt,
+    .page-title,
+    .ph-title,
+    .tl-header,
+    .log-row {
+        min-width: 0;
+    }
+
+    .brand {
+        width: 100%;
+        align-items: flex-start;
+    }
+
+    .brand-txt h1,
+    .page-title {
+        font-size: 22px !important;
+        line-height: 1.2;
+    }
+
+    .page-title i {
+        font-size: 22px !important;
+    }
+
+    .page-subtitle {
+        margin-left: 0 !important;
+        font-size: 14px !important;
+    }
+
+    .page-header,
+    .card,
+    .panel,
+    .hero,
+    .loc-box,
+    .filter-panel,
+    .confirm-box,
+    .alert,
+    .admin-banner,
+    .export-bar,
+    .item-row {
+        padding: 16px !important;
+        border-radius: 18px !important;
+    }
+
+    .ks,
+    .stat-card,
+    .cmp-box {
+        min-width: 0;
+        padding: 16px !important;
+    }
+
+    .ks-val,
+    .stat-value,
+    .cmp-val {
+        font-size: 20px !important;
+    }
+
+    .ks-lbl,
+    .stat-label,
+    .cmp-lbl {
+        font-size: 11px !important;
+    }
+
+    .f-input,
+    .f-select,
+    .f-textarea,
+    select,
+    input,
+    textarea,
+    button {
+        font-size: 16px !important;
+    }
+
+    .btn,
+    .btn-sm,
+    .btn-xs {
+        justify-content: center;
+        max-width: 100%;
+        white-space: normal;
+        text-align: center;
+    }
+
+    .tbl-wrap,
+    .table-container {
+        width: 100%;
+        max-width: 100%;
+        overflow-x: auto !important;
+        overflow-y: hidden;
+        -webkit-overflow-scrolling: touch;
+        padding-bottom: 2px;
+    }
+
+    .tbl,
+    table {
+        min-width: 620px;
+    }
+
+    .tbl th,
+    .tbl td,
+    thead th,
+    tbody td {
+        padding: 10px 12px !important;
+        font-size: 12px !important;
+    }
+
+    .editable {
+        min-width: 92px;
+    }
+
+    .modal,
+    .mbox,
+    .modal-box {
+        max-width: 100%;
+    }
+
+    .mbox,
+    .modal-box {
+        width: calc(100vw - 24px) !important;
+        max-height: 86vh !important;
+        padding: 18px !important;
+        border-radius: 18px !important;
+    }
+
+    .stock-install-fab,
+    #stockInstallBtn {
+        right: 12px !important;
+        left: auto !important;
+        bottom: 12px !important;
+        max-width: calc(100vw - 24px);
+        padding: 11px 14px !important;
+        font-size: 12px !important;
+    }
+
+    .stock-network-badge,
+    #stockNetworkBadge {
+        bottom: 62px !important;
+        max-width: calc(100vw - 24px);
+        width: auto;
+        text-align: center;
+    }
+
+    .toast-stack {
+        right: 12px !important;
+        left: 12px !important;
+        bottom: 78px !important;
+        align-items: stretch !important;
+    }
+
+    .toast {
+        min-width: 0 !important;
+        max-width: 100% !important;
+    }
+}
+
+@media (max-width: 420px) {
+    body {
+        font-size: 13px;
+    }
+
+    .container,
+    .wrap {
+        padding-left: 10px !important;
+        padding-right: 10px !important;
+    }
+
+    .page-header,
+    .card,
+    .panel,
+    .hero,
+    .loc-box,
+    .filter-panel,
+    .confirm-box,
+    .alert,
+    .admin-banner,
+    .export-bar,
+    .item-row {
+        padding: 14px !important;
+    }
+
+    .brand-ico,
+    .ks-ico,
+    .stat-icon,
+    .notif-ico,
+    .tl-icon {
+        transform: scale(0.9);
+        transform-origin: left center;
+    }
+
+    .brand-txt h1,
+    .page-title {
+        font-size: 19px !important;
+    }
+
+    .clock-d {
+        font-size: 20px !important;
+        letter-spacing: 1px !important;
+    }
+
+    .ks-val,
+    .stat-value,
+    .cmp-val {
+        font-size: 18px !important;
+    }
+
+    .nav-link,
+    .nb {
+        padding: 9px 12px !important;
+    }
+
+    .btn,
+    .btn-sm,
+    .btn-xs,
+    .actions > * {
+        width: 100%;
+    }
+
+    .tbl,
+    table {
+        min-width: 560px;
+    }
+
+    .stock-install-fab,
+    #stockInstallBtn {
+        border-radius: 16px !important;
+    }
+}
