@@ -5,26 +5,26 @@
 @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=Inter:wght@400;500;600;700&display=swap');
 
 :root {
-    --bg:     #04090e;
-    --surf:   #081420;
-    --card:   #0d1e2c;
-    --card2:  #122030;
+    --bg:#0f1726;
+    --surf:#162033;
+    --card:#1b263b;
+    --card2:#22324a;
     --bord:   rgba(50,190,143,0.14);
     --bord2:  rgba(50,190,143,0.28);
-    --neon:   #32be8f;
-    --neon2:  #19ffa3;
-    --red:    #ff3553;
-    --orange: #ff9140;
-    --blue:   #3d8cff;
-    --gold:   #ffd060;
+    --neon:#00a86b;
+    --neon2:#00c87a;
+    --red:#e53935;
+    --orange:#f57c00;
+    --blue:#1976d2;
+    --gold:#f9a825;
     --purple: #a855f7;
     --cyan:   #06b6d4;
     --pink:   #ec4899;
-    --text:   #e0f2ea;
-    --text2:  #b8d8cc;
-    --muted:  #5a8070;
-    --glow:   0 0 26px rgba(50,190,143,0.45);
-    --glow-r: 0 0 26px rgba(255,53,83,0.45);
+    --text:#e8eef8;
+    --text2:#bfd0e4;
+    --muted:#8ea3bd;
+    --glow:0 8px 24px rgba(0,168,107,0.18);
+    --glow-r:0 8px 24px rgba(229,57,53,0.18);
     --fh: 'Playfair Display', Georgia, serif;
     --fb: 'Inter', 'Segoe UI', system-ui, sans-serif;
 }
@@ -72,7 +72,7 @@ body::after {
 /* ══ TOPBAR ══ */
 .topbar {
     display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;
-    background:rgba(8,20,32,0.96);border:1px solid var(--bord);border-radius:18px;
+    background:rgba(22,32,51,0.96);border:1px solid var(--bord);border-radius:18px;
     padding:16px 24px;margin-bottom:12px;backdrop-filter:blur(28px);
     box-shadow:0 4px 32px rgba(0,0,0,0.4);
 }
@@ -91,7 +91,7 @@ body::after {
 /* ══ TAB NAV ══ */
 .tab-nav {
     display:flex;align-items:center;flex-wrap:wrap;gap:6px;
-    background:rgba(8,20,32,0.88);border:1px solid var(--bord);border-radius:14px;
+    background:rgba(27,38,59,0.88);border:1px solid var(--bord);border-radius:14px;
     padding:10px 16px;margin-bottom:16px;backdrop-filter:blur(20px);
 }
 .tn {
@@ -113,7 +113,7 @@ body::after {
 /* ══ FILTER BAR ══ */
 .filter-bar {
     display:flex;align-items:flex-end;flex-wrap:wrap;gap:10px;
-    background:rgba(8,20,32,0.88);border:1px solid var(--bord);border-radius:14px;
+    background:rgba(27,38,59,0.88);border:1px solid var(--bord);border-radius:14px;
     padding:14px 18px;margin-bottom:14px;backdrop-filter:blur(20px);
 }
 .fg { display:flex;flex-direction:column;gap:5px;flex:1;min-width:160px; }
@@ -125,7 +125,7 @@ body::after {
 }
 .fg input:focus,.fg select:focus { outline:none;border-color:var(--neon);box-shadow:0 0 14px rgba(50,190,143,0.2); }
 .fg input::placeholder { color:var(--muted); }
-.fg select option { background:#0d1e2c;color:var(--text); }
+.fg select option { background:#1b263b;color:var(--text); }
 
 /* ══ KPI STRIP ══ */
 .kpi-strip { display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:16px; }
@@ -141,7 +141,7 @@ body::after {
 /* ══ SEARCH + CONTROLS ══ */
 .ctrl-bar { display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px; }
 .s-input {
-    flex:1;min-width:220px;padding:10px 16px;background:rgba(0,0,0,0.3);border:1.5px solid var(--bord);
+    flex:1;min-width:220px;padding:10px 16px;background:rgba(15,23,38,0.72);border:1.5px solid var(--bord);
     border-radius:11px;color:var(--text);font-family:var(--fb);font-size:13px;font-weight:600;transition:all 0.28s;
 }
 .s-input:focus  { outline:none;border-color:var(--purple);box-shadow:0 0 14px rgba(168,85,247,0.2); }

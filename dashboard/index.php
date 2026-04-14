@@ -32,17 +32,55 @@ date_default_timezone_set('Africa/Abidjan');
 $today = date('Y-m-d');
 $month = date('Y-m');
 
-/* ── Stats du jour ── */
-$s = $pdo->prepare("SELECT COUNT(*) total_present,
-    SUM(status='retard') total_late,
-    SUM(check_out IS NOT NULL) total_departed,
-    SUM(check_out IS NULL) still_working
-    FROM attendance WHERE work_date=?");
-$s->execute([$today]);
-$ds = $s->fetch(PDO::FETCH_ASSOC);
+function fetchDashboardLiveMetrics(PDO $pdo, string $today): array
+{
+    $stmt = $pdo->prepare("SELECT COUNT(*) total_present,
+        SUM(status='retard') total_late,
+        SUM(check_out IS NOT NULL) total_departed,
+        SUM(check_out IS NULL) still_working
+        FROM attendance WHERE work_date=?");
+    $stmt->execute([$today]);
+    $stats = $stmt->fetch(PDO::FETCH_ASSOC) ?: [];
 
-$total_emp  = (int)$pdo->query("SELECT COUNT(*) FROM employees WHERE status='actif'")->fetchColumn();
-$total_abs  = max(0, $total_emp - ($ds['total_present'] ?? 0));
+    $totalEmp = (int)$pdo->query("SELECT COUNT(*) FROM employees WHERE status='actif'")->fetchColumn();
+    $pendPerm = (int)$pdo->query("SELECT COUNT(*) FROM permissions WHERE status='en_attente'")->fetchColumn();
+    $pendAdv = (int)$pdo->query("SELECT COUNT(*) FROM advances WHERE status='en_attente'")->fetchColumn();
+    $lowStockCount = (int)$pdo->query("SELECT COUNT(*)
+        FROM stocks s
+        JOIN products p ON p.id=s.product_id
+        WHERE s.quantity <= p.alert_quantity")->fetchColumn();
+
+    $totalPresent = (int)($stats['total_present'] ?? 0);
+    $totalLate = (int)($stats['total_late'] ?? 0);
+    $totalDeparted = (int)($stats['total_departed'] ?? 0);
+    $stillWorking = max(0, $totalPresent - $totalDeparted);
+
+    return [
+        'total_present' => $totalPresent,
+        'total_late' => $totalLate,
+        'total_departed' => $totalDeparted,
+        'still_working' => $stillWorking,
+        'total_emp' => $totalEmp,
+        'total_abs' => max(0, $totalEmp - $totalPresent),
+        'pend_perm' => $pendPerm,
+        'pend_adv' => $pendAdv,
+        'pending_total' => $pendPerm + $pendAdv,
+        'low_stock_count' => $lowStockCount,
+        'updated_at' => date('H:i:s'),
+    ];
+}
+
+/* ── Stats du jour ── */
+$liveMetrics = fetchDashboardLiveMetrics($pdo, $today);
+$ds = [
+    'total_present' => $liveMetrics['total_present'],
+    'total_late' => $liveMetrics['total_late'],
+    'total_departed' => $liveMetrics['total_departed'],
+    'still_working' => $liveMetrics['still_working'],
+];
+
+$total_emp = $liveMetrics['total_emp'];
+$total_abs = $liveMetrics['total_abs'];
 
 $s = $pdo->prepare("SELECT COALESCE(SUM(penalty_amount),0) FROM attendance WHERE work_date LIKE ?");
 $s->execute([$month."%"]); $penalties = (float)$s->fetchColumn();
@@ -50,8 +88,8 @@ $s->execute([$month."%"]); $penalties = (float)$s->fetchColumn();
 $s = $pdo->prepare("SELECT COALESCE(SUM(total_amount),0) FROM overtime WHERE work_date LIKE ?");
 $s->execute([$month."%"]); $overtime = (float)$s->fetchColumn();
 
-$pend_perm = (int)$pdo->query("SELECT COUNT(*) FROM permissions WHERE status='en_attente'")->fetchColumn();
-$pend_adv  = (int)$pdo->query("SELECT COUNT(*) FROM advances WHERE status='en_attente'")->fetchColumn();
+$pend_perm = $liveMetrics['pend_perm'];
+$pend_adv  = $liveMetrics['pend_adv'];
 
 /* ── Présences du jour ── */
 $s = $pdo->prepare("SELECT a.*,e.full_name,e.employee_code,p.title pos
@@ -137,6 +175,23 @@ $current_day    = (int)date('j');
 $month_progress = round($current_day / $days_in_month * 100);
 
 $user_name = $_SESSION['username'] ?? $_SESSION['user_name'] ?? 'Admin';
+$live_badges = [
+    'present' => $ds['total_present'] ?? 0,
+    'late' => $ds['total_late'] ?? 0,
+    'permissions' => $pend_perm,
+    'advances' => $pend_adv,
+    'stock' => count($low_stock),
+];
+
+if (isset($_GET['ajax']) && $_GET['ajax'] === 'dashboard_badges') {
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    echo json_encode([
+        'success' => true,
+        'metrics' => fetchDashboardLiveMetrics($pdo, $today),
+    ], JSON_UNESCAPED_UNICODE);
+    exit;
+}
 ?>
 <!DOCTYPE html>
 <html lang="fr">
@@ -161,22 +216,22 @@ $user_name = $_SESSION['username'] ?? $_SESSION['user_name'] ?? 'Admin';
 }
 
 :root {
-    --bg    : #04090e;
-    --surf  : #081420;
-    --card  : #0d1e2c;
-    --bord  : rgba(50,190,143,0.16);
-    --neon  : #32be8f;
-    --neon2 : #19ffa3;
-    --red   : #ff3553;
-    --orange: #ff9140;
-    --blue  : #3d8cff;
-    --gold  : #ffd060;
-    --text  : #e0f2ea;
-    --text2 : #b8d8cc;
-    --muted : #5a8070;
-    --glow      : 0 0 26px rgba(50,190,143,0.45);
-    --glow-r    : 0 0 26px rgba(255,53,83,0.45);
-    --glow-gold : 0 0 26px rgba(255,208,96,0.4);
+    --bg    : #0f1726;
+    --surf  : #162033;
+    --card  : #1b263b;
+    --bord  : rgba(148,163,184,0.18);
+    --neon  : #00a86b;
+    --neon2 : #00c87a;
+    --red   : #e53935;
+    --orange: #f57c00;
+    --blue  : #1976d2;
+    --gold  : #f9a825;
+    --text  : #e8eef8;
+    --text2 : #bfd0e4;
+    --muted : #8ea3bd;
+    --glow      : 0 8px 24px rgba(0,168,107,0.18);
+    --glow-r    : 0 8px 24px rgba(229,57,53,0.18);
+    --glow-gold : 0 8px 24px rgba(249,168,37,0.18);
 
     /* C059 en priorité absolue */
     --fh: 'C059','Source Serif 4','Playfair Display','Book Antiqua',
@@ -201,15 +256,15 @@ body {
 body::before {
     content:''; position:fixed; inset:0; z-index:0; pointer-events:none;
     background:
-        radial-gradient(ellipse 65% 42% at 4%  8%,  rgba(50,190,143,0.08) 0%, transparent 62%),
-        radial-gradient(ellipse 52% 36% at 96% 88%, rgba(61,140,255,0.07) 0%, transparent 62%),
-        radial-gradient(ellipse 38% 28% at 52% 52%, rgba(255,53,83,0.04)  0%, transparent 70%);
+        radial-gradient(ellipse 65% 42% at 4%  8%,  rgba(0,168,107,0.05) 0%, transparent 62%),
+        radial-gradient(ellipse 52% 36% at 96% 88%, rgba(25,118,210,0.04) 0%, transparent 62%),
+        radial-gradient(ellipse 38% 28% at 52% 52%, rgba(249,168,37,0.04) 0%, transparent 70%);
 }
 body::after {
     content:''; position:fixed; inset:0; z-index:0; pointer-events:none;
     background-image:
-        linear-gradient(rgba(50,190,143,0.022) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(50,190,143,0.022) 1px, transparent 1px);
+        linear-gradient(rgba(255,255,255,0.018) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255,255,255,0.018) 1px, transparent 1px);
     background-size: 46px 46px;
 }
 
@@ -219,6 +274,9 @@ body::after {
     margin: 0 auto;
     padding: 18px 18px 48px;
 }
+.m-panel{display:block}
+.mobile-more-card{display:none}
+.android-nav{display:none}
 
 /* ══════════════════════════════════════════════
    TOPBAR
@@ -229,7 +287,7 @@ body::after {
     justify-content: space-between;
     flex-wrap: wrap;
     gap: 18px;
-    background: rgba(8,20,32,0.94);
+    background: rgba(22,32,51,0.96);
     border: 1px solid var(--bord);
     border-radius: 18px;
     padding: 20px 30px;
@@ -249,8 +307,8 @@ body::after {
     flex-shrink:0;
 }
 @keyframes breathe {
-    0%,100% { box-shadow: 0 0 14px rgba(50,190,143,0.4); }
-    50%      { box-shadow: 0 0 38px rgba(50,190,143,0.85); }
+    0%,100% { box-shadow: 0 0 8px rgba(0,168,107,0.2); }
+    50%      { box-shadow: 0 0 20px rgba(0,168,107,0.42); }
 }
 .brand-txt h1 {
     font-family: var(--fh);
@@ -277,7 +335,7 @@ body::after {
     font-weight: 900;
     color: var(--neon);
     letter-spacing: 5px;
-    text-shadow: 0 0 24px rgba(50,190,143,0.55);
+    text-shadow: 0 0 12px rgba(0,168,107,0.18);
     line-height: 1;
 }
 .clock-date {
@@ -292,16 +350,82 @@ body::after {
 
 .user-badge {
     display:flex; align-items:center; gap:10px;
-    background: linear-gradient(135deg, var(--neon), var(--blue));
-    color: var(--bg);
+    background: rgba(0,168,107,0.14);
+    color: var(--text);
     padding: 11px 22px;
     border-radius: 32px;
     font-family: var(--fh);
     font-size: 14px;
     font-weight: 900;
-    box-shadow: var(--glow);
+    box-shadow: none;
+    border: 1px solid rgba(0,168,107,0.18);
     flex-shrink:0;
     letter-spacing: 0.5px;
+}
+.user-badge i { color: var(--neon); }
+
+.live-strip {
+    display:flex;
+    flex-wrap:wrap;
+    gap:12px;
+    margin: 0 0 18px;
+}
+.live-badge {
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:10px 14px;
+    border-radius:16px;
+    background:rgba(27,38,59,0.88);
+    border:1px solid var(--bord);
+    box-shadow:0 12px 28px rgba(0,0,0,0.22);
+    min-width:150px;
+}
+.live-badge i {
+    width:34px;
+    height:34px;
+    border-radius:12px;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:14px;
+}
+.live-badge strong {
+    display:block;
+    font-family:var(--fh);
+    font-size:18px;
+    line-height:1;
+    color:var(--text);
+}
+.live-badge span {
+    display:block;
+    font-size:11px;
+    font-weight:700;
+    color:var(--muted);
+    text-transform:uppercase;
+    letter-spacing:1px;
+}
+.live-badge small {
+    display:block;
+    font-size:11px;
+    font-weight:700;
+    color:var(--text2);
+}
+.live-badge.present i { background:rgba(0,168,107,0.1); color:var(--neon); }
+.live-badge.late i { background:rgba(229,57,53,0.1); color:var(--red); }
+.live-badge.permissions i { background:rgba(249,168,37,0.1); color:var(--gold); }
+.live-badge.advances i { background:rgba(25,118,210,0.1); color:var(--blue); }
+.live-badge.stock i { background:rgba(245,124,0,0.1); color:var(--orange); }
+.is-updating {
+    animation: badgePulse .38s ease;
+}
+.hidden {
+    display: none !important;
+}
+@keyframes badgePulse {
+    0% { transform: scale(1); }
+    50% { transform: scale(1.04); }
+    100% { transform: scale(1); }
 }
 
 /* ══════════════════════════════════════════════
@@ -312,7 +436,7 @@ body::after {
     align-items: center;
     flex-wrap: wrap;
     gap: 10px;
-    background: rgba(8,20,32,0.90);
+    background: rgba(27,38,59,0.9);
     border: 1px solid var(--bord);
     border-radius: 16px;
     padding: 16px 24px;
@@ -326,7 +450,7 @@ body::after {
     min-width: 200px;
     max-width: 340px;
     padding: 12px 42px 12px 16px;
-    background: rgba(50,190,143,0.07);
+    background: rgba(15,23,38,0.72);
     border: 1.5px solid var(--bord);
     border-radius: 12px;
     color: var(--text);
@@ -349,7 +473,7 @@ body::after {
     box-shadow: var(--glow);
     background-color: rgba(50,190,143,0.1);
 }
-.nav-select option { background: #0d1e2c; color: var(--text); padding: 10px 14px; font-size:14px; }
+.nav-select option { background: #1b263b; color: var(--text); padding: 10px 14px; font-size:14px; }
 .nav-select optgroup { color: var(--neon); font-family: var(--fb); font-size:12px; font-style:normal; font-weight:800; letter-spacing:1px; }
 
 .sep { width:1px; height:36px; background:var(--bord); flex-shrink:0; }
@@ -362,7 +486,7 @@ body::after {
     padding: 11px 20px;
     border-radius: 12px;
     border: 1.5px solid var(--bord);
-    background: rgba(50,190,143,0.07);
+    background: rgba(15,23,38,0.72);
     color: var(--text2);
     font-family: var(--fh);
     font-size: 13px;
@@ -392,7 +516,7 @@ body::after {
 .cdbanner {
     display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap;
     gap:28px;
-    background: linear-gradient(135deg, rgba(50,190,143,0.08), rgba(61,140,255,0.08));
+    background: linear-gradient(135deg, rgba(0,168,107,0.07), rgba(25,118,210,0.07));
     border: 1px solid var(--bord);
     border-radius: 18px;
     padding: 26px 34px;
@@ -414,7 +538,7 @@ body::after {
 .cd-units { display:flex; gap:12px; }
 .cd-unit {
     text-align:center;
-    background: rgba(0,0,0,0.38);
+    background: rgba(34,50,74,0.82);
     border: 1px solid var(--bord);
     border-radius: 13px;
     padding: 14px 20px;
@@ -424,7 +548,7 @@ body::after {
     font-family: var(--fh);
     font-size: 32px; font-weight:900;
     color: var(--neon); line-height:1; display:block;
-    text-shadow: 0 0 18px rgba(50,190,143,0.55);
+    text-shadow: none;
 }
 .cd-lab {
     font-family: var(--fb);
@@ -435,7 +559,7 @@ body::after {
 
 .prog-wrap { flex:1 1 260px; max-width:320px; }
 .prog-head { display:flex; justify-content:space-between; font-family:var(--fb); font-size:13px; font-weight:700; color:var(--muted); margin-bottom:10px; }
-.prog-bar  { height:9px; background:rgba(255,255,255,0.06); border-radius:20px; overflow:hidden; }
+.prog-bar  { height:9px; background:rgba(255,255,255,0.08); border-radius:20px; overflow:hidden; }
 .prog-fill { height:100%; background:linear-gradient(90deg,var(--neon),var(--blue)); border-radius:20px; position:relative; }
 .prog-fill::after { content:''; position:absolute; right:0; top:0; bottom:0; width:22px; background:#fff; opacity:.22; filter:blur(4px); animation:shine 2.5s ease-in-out infinite; }
 @keyframes shine { 0%,100%{opacity:.12} 50%{opacity:.42} }
@@ -475,8 +599,8 @@ body::after {
 .kpi:hover::after { opacity:1; }
 .kpi:hover {
     transform: translateY(-7px);
-    box-shadow: 0 24px 48px rgba(0,0,0,0.48), 0 0 28px var(--ks, rgba(50,190,143,0.28));
-    border-color: rgba(50,190,143,0.28);
+    box-shadow: 0 18px 42px rgba(19,40,56,0.12), 0 0 0 1px var(--ks, rgba(0,168,107,0.16));
+    border-color: rgba(0,168,107,0.18);
 }
 .kpi.red    { --kc:var(--red);    --ks:rgba(255,53,83,0.28);   }
 .kpi.orange { --kc:var(--orange); --ks:rgba(255,145,64,0.28);  }
@@ -523,7 +647,7 @@ body::after {
     font-family: var(--fb);
     font-size: 12px; font-weight:500; color:var(--muted);
     margin-top:16px; padding-top:14px;
-    border-top:1px solid rgba(255,255,255,0.05);
+    border-top:1px solid rgba(26,46,58,0.07);
     line-height:1.65;
 }
 
@@ -599,15 +723,15 @@ body::after {
 
 .panel {
     background:var(--card); border:1px solid var(--bord);
-    border-radius:18px; overflow:hidden; transition:border-color 0.3s;
+    border-radius:18px; overflow:hidden; transition:border-color 0.3s, box-shadow 0.3s;
 }
-.panel:hover { border-color:rgba(50,190,143,0.26); }
+.panel:hover { border-color:rgba(0,168,107,0.2); box-shadow:0 18px 34px rgba(0,0,0,0.24); }
 
 .ph {
     display:flex; align-items:center; justify-content:space-between; gap:14px;
     padding:20px 24px;
-    border-bottom:1px solid rgba(255,255,255,0.05);
-    background:rgba(0,0,0,0.18);
+    border-bottom:1px solid rgba(26,46,58,0.06);
+    background:rgba(24,35,55,0.92);
     flex-wrap:wrap;
 }
 .ph-title {
@@ -715,7 +839,7 @@ body::after {
     font-family:var(--fb); font-size:12px; font-weight:600;
     color:var(--muted); margin-top:4px; line-height:1.5;
 }
-.rk-bar-w { flex:1; height:6px; background:rgba(255,255,255,0.06); border-radius:20px; overflow:hidden; }
+.rk-bar-w { flex:1; height:6px; background:rgba(255,255,255,0.05); border-radius:20px; overflow:hidden; }
 .rk-bar   { height:100%; background:linear-gradient(90deg,var(--red),var(--orange)); border-radius:20px; }
 .rk-amt {
     font-family:var(--fh); font-size:13px; font-weight:900;
@@ -851,26 +975,46 @@ body::after {
     color: var(--muted);
     text-transform:uppercase; letter-spacing:1.2px;
     padding: 10px 14px;
-    border-bottom: 1px solid rgba(255,255,255,0.06);
+    border-bottom: 1px solid rgba(148,163,184,0.14);
     text-align:left;
-    background: rgba(0,0,0,0.15);
+    background: rgba(15,23,38,0.72);
 }
 .mv-table td {
     font-family: var(--fb);
     font-size: 13px; font-weight:500;
     color: var(--text2);
     padding: 13px 14px;
-    border-bottom: 1px solid rgba(255,255,255,0.04);
+    border-bottom: 1px solid rgba(148,163,184,0.1);
     line-height:1.5;
 }
 .mv-table tr:last-child td { border-bottom:none; }
 .mv-table tbody tr { transition:all 0.25s; }
-.mv-table tbody tr:hover { background:rgba(50,190,143,0.04); }
+.mv-table tbody tr:hover { background:rgba(0,168,107,0.08); }
 .mv-table td strong { font-family:var(--fh); font-weight:900; color:var(--text); }
 
 .badge-entry { background:rgba(50,190,143,0.14); color:var(--neon);  font-family:var(--fb); font-size:10px; font-weight:800; padding:4px 11px; border-radius:20px; letter-spacing:0.5px; }
 .badge-exit  { background:rgba(255,53,83,0.14);  color:var(--red);   font-family:var(--fb); font-size:10px; font-weight:800; padding:4px 11px; border-radius:20px; letter-spacing:0.5px; }
 .badge-alert { background:rgba(255,208,96,0.14); color:var(--gold);  font-family:var(--fb); font-size:10px; font-weight:800; padding:4px 11px; border-radius:20px; letter-spacing:0.5px; }
+.mobile-stock-list{display:none}
+.mobile-stock-card{
+    background:rgba(27,38,59,.88);border:1px solid rgba(148,163,184,.14);
+    border-radius:14px;padding:14px;margin-bottom:10px;
+    box-shadow:0 12px 28px rgba(0,0,0,0.22);
+}
+.mobile-stock-card:last-child{margin-bottom:0}
+.mobile-stock-head{
+    display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:10px;
+}
+.mobile-stock-name{
+    font-family:var(--fh);font-size:14px;font-weight:900;color:var(--text);line-height:1.35;
+}
+.mobile-stock-meta{
+    display:flex;flex-wrap:wrap;gap:6px;
+}
+.mobile-stock-pill{
+    display:inline-flex;align-items:center;gap:5px;padding:4px 10px;border-radius:999px;
+    background:rgba(15,23,38,.72);color:var(--text2);font-size:10px;font-weight:800;
+}
 
 /* ══════════════════════════════════════════════
    ANIMATIONS
@@ -908,32 +1052,126 @@ body::after {
 }
 
 @media (max-width:680px) {
-    .wrap     { padding:12px 12px 36px; }
-    .topbar   { padding:14px 16px; gap:12px; }
-    .brand-ico{ width:44px; height:44px; font-size:21px; }
-    .brand-txt h1 { font-size:18px; }
-    .brand-txt p  { font-size:10px; letter-spacing:2px; }
-    .clock-time   { font-size:26px; letter-spacing:3px; }
-    .clock-date   { font-size:11px; }
-    .user-badge   { padding:9px 16px; font-size:13px; }
-    .kpi-grid { grid-template-columns:repeat(2,1fr); gap:12px; }
-    .kpi      { padding:20px 16px; }
-    .kpi-val  { font-size:36px; }
-    .kpi-lbl  { font-size:12px; }
-    .qa-grid  { grid-template-columns:repeat(2,1fr); gap:10px; }
-    .qa       { padding:20px 12px; gap:10px; }
-    .qa-ico   { width:46px; height:46px; font-size:21px; }
-    .qa-lbl   { font-size:12px; }
-    .cd-units { gap:8px; }
-    .cd-unit  { min-width:62px; padding:11px 13px; }
-    .cd-val   { font-size:26px; }
+    .wrap     { padding:8px 8px 28px; }
+    body{line-height:1.5}
+    .topbar   { padding:10px 12px; gap:10px; border-radius:16px; margin-bottom:12px; }
+    .brand{gap:10px}
+    .brand-ico{ width:38px; height:38px; font-size:18px; border-radius:12px; }
+    .brand-txt h1 { font-size:15px; }
+    .brand-txt p  { font-size:9px; letter-spacing:1.4px; }
+    .clock-time   { font-size:21px; letter-spacing:2px; }
+    .clock-date   { font-size:10px; }
+    .user-badge   { padding:7px 12px; font-size:11px; border-radius:24px; }
+    .live-strip{gap:8px;margin-bottom:12px}
+    .live-badge{min-width:calc(50% - 4px);flex:1 1 calc(50% - 4px);padding:8px 10px;border-radius:14px;gap:8px;box-shadow:inset 0 1px 0 rgba(255,255,255,.03)}
+    .live-badge i{width:28px;height:28px;border-radius:10px;font-size:12px}
+    .live-badge strong{font-size:15px}
+    .live-badge span,.live-badge small{font-size:9px}
+    .kpi-grid { grid-template-columns:repeat(2,1fr); gap:8px; margin-bottom:14px; }
+    .kpi      { padding:13px 11px; border-radius:16px; box-shadow:inset 0 1px 0 rgba(255,255,255,.03); }
+    .kpi-top{margin-bottom:12px}
+    .kpi-ico{width:38px;height:38px;border-radius:12px;font-size:16px}
+    .kpi-tag{font-size:9px;padding:4px 9px}
+    .kpi-val  { font-size:28px; }
+    .kpi-lbl  { font-size:10px; letter-spacing:.8px; }
+    .kpi-sub{font-size:10px;margin-top:10px;padding-top:10px;line-height:1.45}
+    .qa-grid  { grid-template-columns:repeat(2,1fr); gap:8px; margin-bottom:14px; }
+    .qa       { padding:13px 10px; gap:7px; border-radius:14px; min-height:92px; justify-content:center; }
+    .qa-ico   { width:38px; height:38px; font-size:17px; border-radius:12px; }
+    .qa-lbl   { font-size:11px; }
+    .qa-lbl small{font-size:9px}
+    .cdbanner{padding:14px 14px;border-radius:16px}
+    .cd-label{font-size:10px;margin-bottom:8px}
+    .cd-units { gap:6px; }
+    .cd-unit  { min-width:52px; padding:8px 8px; border-radius:11px; }
+    .cd-val   { font-size:20px; }
+    .cd-lab{font-size:8px}
+    .prog-head,.prog-sub,.fin-ot{font-size:11px}
+    .fin-lbl{font-size:10px}
+    .fin-penalty{font-size:24px}
     .nav-bar  { flex-direction:column; align-items:stretch; }
     .nb       { justify-content:center; }
-    .cdbanner { flex-direction:column; align-items:flex-start; gap:20px; }
+    .cdbanner { flex-direction:column; align-items:flex-start; gap:14px; }
     .fin-sum  { text-align:left; }
-    .ph       { padding:16px 18px; }
-    .ph-title { font-size:14px; }
-    .pb       { padding:16px 16px; }
+    .row2,.row3{gap:10px;margin-bottom:10px}
+    .panel{border-radius:16px; box-shadow:inset 0 1px 0 rgba(255,255,255,.03)}
+    .ph       { padding:12px 14px; gap:10px; }
+    .ph-title { font-size:12px; gap:8px; }
+    .pbadge,.ph-link{font-size:9px}
+    .pb       { padding:12px 12px; }
+    .section-title{margin:18px 0 10px;gap:10px}
+    .section-title h2{font-size:14px}
+    .section-line{height:18px}
+    .stock-kpi-row{grid-template-columns:1fr;gap:8px;margin-bottom:10px}
+    .skpi{padding:12px 14px;border-radius:14px;gap:10px}
+    .skpi-ico{width:34px;height:34px;border-radius:10px;font-size:15px}
+    .skpi-val{font-size:20px}
+    .skpi-lbl{font-size:10px;letter-spacing:.7px}
+    .mv-table{display:none}
+    .mobile-stock-list{display:block}
+    .mobile-stock-card{padding:10px 11px;border-radius:12px;margin-bottom:8px;box-shadow:inset 0 1px 0 rgba(255,255,255,.03)}
+    .mobile-stock-head{margin-bottom:8px;gap:8px}
+    .mobile-stock-name{font-size:12px}
+    .mobile-stock-pill{padding:3px 8px;font-size:9px}
+    .badge-entry,.badge-exit,.badge-alert{font-size:9px;padding:3px 8px}
+    .att-item,.rank-item,.ot-item,.req-item{padding:9px 2px;gap:10px}
+    .av{width:34px;height:34px;border-radius:10px;font-size:12px}
+    .ai-name,.rk-name,.ot-name,.req-name{font-size:12px}
+    .ai-pos,.rk-cnt,.ot-hrs,.req-det{font-size:10px}
+    .at-time{font-size:15px}
+    .at-badge,.rs{font-size:9px;padding:3px 8px}
+    .m-panel{display:none;animation:fadeUp .28s ease}
+    .m-panel.on{display:block}
+    .wrap{padding-bottom:88px}
+    .topbar{position:sticky;top:0;z-index:900;background:rgba(22,32,51,.97);backdrop-filter:blur(18px)}
+    .nav-bar{display:none}
+    .mobile-more-card{
+        display:grid;grid-template-columns:1fr 1fr;gap:8px;
+    }
+    .mobile-more-link{
+        display:flex;align-items:center;gap:10px;
+        padding:10px;border-radius:12px;text-decoration:none;
+        background:var(--card);border:1px solid var(--bord);color:var(--text2);
+        font-family:var(--fh);font-size:10px;font-weight:900;
+    }
+    .mobile-more-link i{
+        width:28px;height:28px;border-radius:9px;
+        display:flex;align-items:center;justify-content:center;
+        background:rgba(0,168,107,0.12);color:var(--neon);flex-shrink:0;
+    }
+    .android-nav{
+        display:flex;position:fixed;bottom:0;left:0;right:0;z-index:950;
+        background:rgba(22,32,51,.98);border-top:1px solid rgba(148,163,184,.14);
+        box-shadow:0 -8px 24px rgba(0,0,0,.28);
+        padding-bottom:env(safe-area-inset-bottom,0px);
+    }
+    .android-nav .nav-item{
+        flex:1;min-width:0;border:none;background:transparent;color:var(--muted);
+        display:flex;flex-direction:column;align-items:center;justify-content:center;
+        gap:3px;padding:8px 4px 10px;position:relative;
+    }
+    .android-nav .nav-item::before{
+        content:'';position:absolute;top:7px;left:50%;transform:translateX(-50%) scaleX(0);
+        width:46px;height:24px;border-radius:14px;background:rgba(0,168,107,.12);
+        transition:transform .26s cubic-bezier(.34,1.4,.64,1);
+    }
+    .android-nav .nav-item.active::before{transform:translateX(-50%) scaleX(1)}
+    .android-nav .nav-item i,.android-nav .nav-item span{position:relative;z-index:1}
+    .android-nav .nav-item i{font-size:16px}
+    .android-nav .nav-item span{
+        font-family:var(--fh);font-size:8px;font-weight:900;letter-spacing:.2px;white-space:nowrap;
+    }
+    .android-nav .nav-item.active{color:var(--neon)}
+    .android-nav .nav-badge{
+        position:absolute;top:5px;left:calc(50% + 8px);z-index:2;
+        min-width:16px;height:16px;padding:0 4px;border-radius:999px;
+        background:var(--red);color:#fff;border:1.5px solid rgba(22,32,51,.98);
+        display:flex;align-items:center;justify-content:center;
+        font-size:8px;font-weight:900;font-family:var(--fh);
+    }
+    .android-nav .nav-badge.gold{background:var(--gold);color:var(--bg)}
+    .android-nav .nav-badge.blue{background:var(--blue);color:#fff}
+    .chart-box{height:168px}
 }
 
 @media (max-width:420px) {
@@ -941,12 +1179,16 @@ body::after {
     .qa-grid  { grid-template-columns:1fr 1fr; }
     .topbar   { flex-direction:column; align-items:flex-start; }
     .clock    { align-self:center; }
+    .live-badge{min-width:100%;flex-basis:100%}
+    .qa{min-height:86px}
+    .chart-box{height:156px}
 }
 </style>
 </head>
 <body>
 <div class="wrap">
 
+<div class="m-panel on" id="panel-home">
 <!-- ══════════════ TOPBAR ══════════════ -->
 <div class="topbar">
     <div class="brand">
@@ -965,6 +1207,49 @@ body::after {
     <div class="user-badge">
         <i class="fas fa-user-shield"></i>
         <?= htmlspecialchars($user_name) ?>
+    </div>
+</div>
+
+<div class="live-strip">
+    <div class="live-badge present" id="live-badge-present">
+        <i class="fas fa-user-check"></i>
+        <div>
+            <span>Présents</span>
+            <strong id="live-present"><?= (int)$live_badges['present'] ?></strong>
+            <small id="live-presence-sub"><?= (int)$ds['still_working'] ?> en poste</small>
+        </div>
+    </div>
+    <div class="live-badge late" id="live-badge-late">
+        <i class="fas fa-user-clock"></i>
+        <div>
+            <span>Retards</span>
+            <strong id="live-late"><?= (int)$live_badges['late'] ?></strong>
+            <small id="live-abs-sub"><?= (int)$total_abs ?> absent(s)</small>
+        </div>
+    </div>
+    <div class="live-badge permissions" id="live-badge-permissions">
+        <i class="fas fa-file-signature"></i>
+        <div>
+            <span>Permissions</span>
+            <strong id="live-permissions"><?= (int)$live_badges['permissions'] ?></strong>
+            <small>Demandes en attente</small>
+        </div>
+    </div>
+    <div class="live-badge advances" id="live-badge-advances">
+        <i class="fas fa-money-bill-wave"></i>
+        <div>
+            <span>Avances</span>
+            <strong id="live-advances"><?= (int)$live_badges['advances'] ?></strong>
+            <small>Validation à faire</small>
+        </div>
+    </div>
+    <div class="live-badge stock" id="live-badge-stock">
+        <i class="fas fa-triangle-exclamation"></i>
+        <div>
+            <span>Stock Bas</span>
+            <strong id="live-stock"><?= (int)$live_badges['stock'] ?></strong>
+            <small id="live-updated-at">Sync <?= htmlspecialchars($liveMetrics['updated_at']) ?></small>
+        </div>
     </div>
 </div>
 
@@ -1075,9 +1360,9 @@ body::after {
             <div class="kpi-ico ico-g"><i class="fas fa-users"></i></div>
             <span class="kpi-tag tg">Actifs</span>
         </div>
-        <div class="kpi-val counter"><?= $total_emp ?></div>
+        <div class="kpi-val counter" id="kpi-total-emp"><?= $total_emp ?></div>
         <div class="kpi-lbl">Employés Total</div>
-        <div class="kpi-sub">📅 Présents aujourd'hui : <?= $ds['total_present'] ?? 0 ?></div>
+        <div class="kpi-sub">📅 Présents aujourd'hui : <span id="kpi-present-inline"><?= $ds['total_present'] ?? 0 ?></span></div>
     </div>
 
     <div class="kpi">
@@ -1085,9 +1370,9 @@ body::after {
             <div class="kpi-ico ico-g"><i class="fas fa-fingerprint"></i></div>
             <span class="kpi-tag tg">✅ Présents</span>
         </div>
-        <div class="kpi-val counter"><?= $ds['total_present'] ?? 0 ?></div>
+        <div class="kpi-val counter" id="kpi-present"><?= $ds['total_present'] ?? 0 ?></div>
         <div class="kpi-lbl">Présents Aujourd'hui</div>
-        <div class="kpi-sub">
+        <div class="kpi-sub" id="kpi-presence-sub">
             🔵 En poste : <?= $ds['still_working'] ?? 0 ?>
             &nbsp;·&nbsp;
             🏁 Partis : <?= $ds['total_departed'] ?? 0 ?>
@@ -1099,9 +1384,9 @@ body::after {
             <div class="kpi-ico ico-r"><i class="fas fa-user-clock"></i></div>
             <span class="kpi-tag tgr">⚠️ Retards</span>
         </div>
-        <div class="kpi-val counter" style="color:var(--red)"><?= $ds['total_late'] ?? 0 ?></div>
+        <div class="kpi-val counter" style="color:var(--red)" id="kpi-late"><?= $ds['total_late'] ?? 0 ?></div>
         <div class="kpi-lbl">Retards Aujourd'hui</div>
-        <div class="kpi-sub">🔴 Absents : <?= $total_abs ?></div>
+        <div class="kpi-sub" id="kpi-abs-sub">🔴 Absents : <?= $total_abs ?></div>
     </div>
 
     <div class="kpi orange">
@@ -1109,9 +1394,9 @@ body::after {
             <div class="kpi-ico ico-o"><i class="fas fa-sign-out-alt"></i></div>
             <span class="kpi-tag tgo">Départs</span>
         </div>
-        <div class="kpi-val counter" style="color:var(--orange)"><?= $ds['total_departed'] ?? 0 ?></div>
+        <div class="kpi-val counter" style="color:var(--orange)" id="kpi-departed"><?= $ds['total_departed'] ?? 0 ?></div>
         <div class="kpi-lbl">Ont Pointé Départ</div>
-        <div class="kpi-sub">⏳ Encore en poste : <?= $ds['still_working'] ?? 0 ?></div>
+        <div class="kpi-sub" id="kpi-working-sub">⏳ Encore en poste : <?= $ds['still_working'] ?? 0 ?></div>
     </div>
 
     <div class="kpi red">
@@ -1143,7 +1428,7 @@ body::after {
             <div class="kpi-ico ico-d"><i class="fas fa-file-alt"></i></div>
             <span class="kpi-tag tgd">En attente</span>
         </div>
-        <div class="kpi-val counter" style="color:var(--gold)"><?= $pend_perm ?></div>
+        <div class="kpi-val counter" style="color:var(--gold)" id="kpi-permissions"><?= $pend_perm ?></div>
         <div class="kpi-lbl">Permissions</div>
         <div class="kpi-sub">📋 À traiter rapidement</div>
     </div>
@@ -1153,7 +1438,7 @@ body::after {
             <div class="kpi-ico ico-b"><i class="fas fa-hand-holding-usd"></i></div>
             <span class="kpi-tag tgb">En attente</span>
         </div>
-        <div class="kpi-val counter" style="color:var(--blue)"><?= $pend_adv ?></div>
+        <div class="kpi-val counter" style="color:var(--blue)" id="kpi-advances"><?= $pend_adv ?></div>
         <div class="kpi-lbl">Avances</div>
         <div class="kpi-sub">💰 Demandes à valider</div>
     </div>
@@ -1222,18 +1507,21 @@ body::after {
     <a href="<?= project_url('hr/employees_manager.php') ?>?tab=permissions" class="qa">
         <div class="qa-ico" style="background:rgba(255,208,96,0.12);color:var(--gold)"><i class="fas fa-file-signature"></i></div>
         <span class="qa-lbl">Permissions
-            <small><?= $pend_perm ?> en attente</small>
+            <small id="qa-permissions-small"><?= $pend_perm ?> en attente</small>
         </span>
     </a>
     <a href="<?= project_url('hr/employees_manager.php') ?>?tab=advances" class="qa">
         <div class="qa-ico" style="background:rgba(255,53,83,0.12);color:var(--red)"><i class="fas fa-money-bill-wave"></i></div>
         <span class="qa-lbl">Avances
-            <small><?= $pend_adv ?> en attente</small>
+            <small id="qa-advances-small"><?= $pend_adv ?> en attente</small>
         </span>
     </a>
 </div>
 
+</div>
+
 <!-- ══════════════ GRAPHIQUES ══════════════ -->
+<div class="m-panel" id="panel-rh">
 <div class="row2">
     <div class="panel">
         <div class="ph">
@@ -1403,9 +1691,12 @@ body::after {
 
 </div>
 
+</div>
+
 <!-- ══════════════════════════════════════════════
      SECTION MOUVEMENTS DE STOCK
 ══════════════════════════════════════════════ -->
+<div class="m-panel" id="panel-stock">
 <div class="section-title">
     <div class="section-line"></div>
     <h2>📦 Mouvements de Stock</h2>
@@ -1485,7 +1776,7 @@ body::after {
                 <div class="dot" style="background:var(--gold);box-shadow:0 0 9px var(--gold)"></div>
                 ⚠️ Alertes Stock Bas
             </div>
-            <span class="pbadge" style="background:rgba(255,208,96,0.12);color:var(--gold)"><?= count($low_stock) ?> alertes</span>
+            <span class="pbadge" style="background:rgba(255,208,96,0.12);color:var(--gold)" id="stock-alert-badge"><?= count($low_stock) ?> alertes</span>
         </div>
         <div class="pb">
             <?php if(empty($low_stock)): ?>
@@ -1511,6 +1802,20 @@ body::after {
                     <?php endforeach; ?>
                 </tbody>
             </table>
+            <div class="mobile-stock-list">
+                <?php foreach($low_stock as $item): ?>
+                <div class="mobile-stock-card">
+                    <div class="mobile-stock-head">
+                        <div class="mobile-stock-name"><?= htmlspecialchars($item['name']) ?></div>
+                        <span class="badge-alert">⚠️ ALERTE</span>
+                    </div>
+                    <div class="mobile-stock-meta">
+                        <span class="mobile-stock-pill"><i class="fas fa-layer-group"></i> Qté <?= (int)$item['quantity'] ?></span>
+                        <span class="mobile-stock-pill"><i class="fas fa-bell"></i> Seuil <?= (int)$item['alert_quantity'] ?></span>
+                    </div>
+                </div>
+                <?php endforeach; ?>
+            </div>
             <?php endif; ?>
         </div>
     </div>
@@ -1554,13 +1859,72 @@ body::after {
                     <?php endforeach; ?>
                 </tbody>
             </table>
+            <div class="mobile-stock-list">
+                <?php foreach($recent_movements as $mv): ?>
+                <div class="mobile-stock-card">
+                    <div class="mobile-stock-head">
+                        <div class="mobile-stock-name"><?= htmlspecialchars($mv['name']) ?></div>
+                        <?php if($mv['type']=='entry'): ?>
+                        <span class="badge-entry">↓ ENTRÉE</span>
+                        <?php else: ?>
+                        <span class="badge-exit">↑ SORTIE</span>
+                        <?php endif; ?>
+                    </div>
+                    <div class="mobile-stock-meta">
+                        <span class="mobile-stock-pill"><i class="fas fa-sort-amount-up"></i> Qté <?= (int)$mv['quantity'] ?></span>
+                        <span class="mobile-stock-pill"><i class="fas fa-clock"></i> <?= date('d/m H:i', strtotime($mv['movement_date'])) ?></span>
+                    </div>
+                </div>
+                <?php endforeach; ?>
+            </div>
             <?php endif; ?>
         </div>
     </div>
 
 </div>
 
+</div>
+
+<div class="m-panel" id="panel-more">
+    <div class="panel" style="margin-bottom:18px">
+        <div class="ph">
+            <div class="ph-title"><div class="dot b"></div> Plus d'actions</div>
+            <span class="pbadge b">Mobile</span>
+        </div>
+        <div class="pb">
+            <div class="mobile-more-card">
+                <a href="<?= project_url('hr/admin_attendance_viewer_pro.php') ?>" class="mobile-more-link"><i class="fas fa-satellite-dish"></i><span>Visionneuse</span></a>
+                <a href="<?= project_url('stock/arrivage_reception.php') ?>" class="mobile-more-link"><i class="fas fa-truck"></i><span>Réception</span></a>
+                <a href="<?= project_url('messaging/messagerie.php') ?>" class="mobile-more-link"><i class="fas fa-comments"></i><span>Messagerie</span></a>
+                <a href="<?= project_url('finance/caisse_complete_enhanced.php') ?>" class="mobile-more-link"><i class="fas fa-cash-register"></i><span>Caisse</span></a>
+                <a href="<?= project_url('dashboard/admin_nasa.php') ?>" class="mobile-more-link"><i class="fas fa-user-shield"></i><span>Admin</span></a>
+                <a href="<?= project_url('auth/profile.php') ?>" class="mobile-more-link"><i class="fas fa-user-circle"></i><span>Profil</span></a>
+                <a href="<?= project_url('documents/documents_erp_pro.php') ?>" class="mobile-more-link"><i class="fas fa-archive"></i><span>Archives</span></a>
+                <a href="<?= project_url('auth/logout.php') ?>" class="mobile-more-link"><i class="fas fa-sign-out-alt"></i><span>Déconnexion</span></a>
+            </div>
+        </div>
+    </div>
+</div>
+
 </div><!-- /wrap -->
+
+<nav class="android-nav" id="android-nav" aria-label="Navigation mobile dashboard">
+    <button class="nav-item active" type="button" data-panel="home" onclick="switchDashboardPanel('home',this)">
+        <i class="fas fa-house"></i><span>Accueil</span>
+        <span class="nav-badge gold <?= ($pend_perm + $pend_adv) > 0 ? '' : 'hidden' ?>" id="nav-badge-home"><?= $pend_perm + $pend_adv ?></span>
+    </button>
+    <button class="nav-item" type="button" data-panel="rh" onclick="switchDashboardPanel('rh',this)">
+        <i class="fas fa-users"></i><span>RH</span>
+        <span class="nav-badge <?= ($pend_perm + $pend_adv) > 0 ? '' : 'hidden' ?>" id="nav-badge-rh"><?= $pend_perm + $pend_adv ?></span>
+    </button>
+    <button class="nav-item" type="button" data-panel="stock" onclick="switchDashboardPanel('stock',this)">
+        <i class="fas fa-boxes-stacked"></i><span>Stock</span>
+        <span class="nav-badge blue <?= count($low_stock) > 0 ? '' : 'hidden' ?>" id="nav-badge-stock"><?= count($low_stock) ?></span>
+    </button>
+    <button class="nav-item" type="button" data-panel="more" onclick="switchDashboardPanel('more',this)">
+        <i class="fas fa-ellipsis-h"></i><span>Plus</span>
+    </button>
+</nav>
 
 <script>
 /* ─ Horloge ─ */
@@ -1586,14 +1950,37 @@ function countdown(){
 }
 countdown(); setInterval(countdown,1000);
 
+function switchDashboardPanel(panel,btn){
+    if(window.innerWidth > 680) return;
+    document.querySelectorAll('.m-panel').forEach(function(el){ el.classList.remove('on'); });
+    var target=document.getElementById('panel-'+panel);
+    if(target) target.classList.add('on');
+    document.querySelectorAll('.android-nav .nav-item').forEach(function(el){ el.classList.remove('active'); });
+    var navBtn=btn || document.querySelector('.android-nav .nav-item[data-panel="'+panel+'"]');
+    if(navBtn) navBtn.classList.add('active');
+    window.scrollTo({top:0,behavior:'smooth'});
+}
+
+function initMobileDashboard(){
+    if(window.innerWidth <= 680){
+        switchDashboardPanel('home');
+    }else{
+        document.querySelectorAll('.m-panel').forEach(function(el){ el.classList.add('on'); });
+    }
+}
+window.addEventListener('resize', initMobileDashboard);
+initMobileDashboard();
+
 /* ─ Chart defaults ─ */
-Chart.defaults.color='#5a8070';
-Chart.defaults.borderColor='rgba(255,255,255,0.04)';
+Chart.defaults.color='#6f8596';
+Chart.defaults.borderColor='rgba(26,46,58,0.08)';
 Chart.defaults.font.family="'Inter',sans-serif";
-Chart.defaults.font.size=12;
-const tip={backgroundColor:'rgba(8,20,32,0.97)',borderColor:'rgba(50,190,143,0.28)',
+const isMobileDash = window.innerWidth <= 680;
+Chart.defaults.font.size=isMobileDash ? 10 : 12;
+const tip={backgroundColor:'rgba(22,32,51,0.98)',borderColor:'rgba(0,168,107,0.18)',
     borderWidth:1,padding:14,cornerRadius:10,
-    titleFont:{weight:'700',size:13},bodyFont:{size:12}};
+    titleFont:{weight:'700',size:isMobileDash?11:13},bodyFont:{size:isMobileDash?10:12},
+    titleColor:'#e8eef8',bodyColor:'#bfd0e4'};
 
 /* ─ Présences 7 jours ─ */
 const wd=<?= json_encode($week_att) ?>;
@@ -1610,9 +1997,9 @@ new Chart(document.getElementById('weekChart'),{
         ]
     },
     options:{responsive:true,maintainAspectRatio:false,
-        plugins:{legend:{position:'top',labels:{usePointStyle:true,padding:18,color:'#5a8070'}},tooltip:tip},
-        scales:{x:{grid:{display:false},ticks:{color:'#5a8070',font:{size:11}}},
-                y:{beginAtZero:true,grid:{color:'rgba(255,255,255,0.04)'},ticks:{color:'#5a8070',stepSize:1}}}}
+        plugins:{legend:{position:'top',labels:{usePointStyle:true,padding:isMobileDash?10:18,color:'#8ea3bd',boxWidth:isMobileDash?8:12}},tooltip:tip},
+        scales:{x:{grid:{display:false},ticks:{color:'#8ea3bd',font:{size:isMobileDash?9:11},maxRotation:0,minRotation:0}},
+                y:{beginAtZero:true,grid:{color:'rgba(148,163,184,0.12)'},ticks:{color:'#8ea3bd',stepSize:1}}}}
 });
 
 /* ─ Retards du mois ─ */
@@ -1626,14 +2013,14 @@ new Chart(document.getElementById('lateChart'),{
             label:'Retards',data:ld.map(d=>d.late_count),
             backgroundColor:'rgba(255,53,83,0.1)',borderColor:'#ff3553',borderWidth:2.5,
             fill:true,tension:0.45,
-            pointBackgroundColor:'#ff3553',pointBorderColor:'#04090e',
+            pointBackgroundColor:'#ff3553',pointBorderColor:'#ffffff',
             pointBorderWidth:2,pointRadius:5,pointHoverRadius:8
         }]
     },
     options:{responsive:true,maintainAspectRatio:false,
         plugins:{legend:{display:false},tooltip:{...tip,borderColor:'rgba(255,53,83,0.28)'}},
-        scales:{x:{grid:{display:false},ticks:{color:'#5a8070',font:{size:11}}},
-                y:{beginAtZero:true,grid:{color:'rgba(255,255,255,0.04)'},ticks:{color:'#5a8070',stepSize:1}}}}
+        scales:{x:{grid:{display:false},ticks:{color:'#8ea3bd',font:{size:isMobileDash?9:11},maxRotation:0,minRotation:0}},
+                y:{beginAtZero:true,grid:{color:'rgba(148,163,184,0.12)'},ticks:{color:'#8ea3bd',stepSize:1}}}}
 });
 
 /* ─ Mouvements de stock (area) ─ */
@@ -1649,26 +2036,26 @@ new Chart(document.getElementById('movChart'),{
                 label:'Entrées',data:md.map(d=>d.entries),
                 backgroundColor:'rgba(50,190,143,0.12)',borderColor:'#32be8f',
                 borderWidth:2.5,fill:true,tension:0.42,
-                pointBackgroundColor:'#32be8f',pointBorderColor:'#04090e',
+                pointBackgroundColor:'#32be8f',pointBorderColor:'#ffffff',
                 pointBorderWidth:2,pointRadius:4,pointHoverRadius:7
             },
             {
                 label:'Sorties',data:md.map(d=>d.exits),
                 backgroundColor:'rgba(255,53,83,0.12)',borderColor:'#ff3553',
                 borderWidth:2.5,fill:true,tension:0.42,
-                pointBackgroundColor:'#ff3553',pointBorderColor:'#04090e',
+                pointBackgroundColor:'#ff3553',pointBorderColor:'#ffffff',
                 pointBorderWidth:2,pointRadius:4,pointHoverRadius:7
             }
         ]
     },
     options:{responsive:true,maintainAspectRatio:false,
         plugins:{
-            legend:{position:'top',labels:{usePointStyle:true,padding:18,color:'#5a8070'}},
+            legend:{position:'top',labels:{usePointStyle:true,padding:isMobileDash?10:18,color:'#8ea3bd',boxWidth:isMobileDash?8:12}},
             tooltip:{...tip,mode:'index',intersect:false}
         },
         scales:{
-            x:{grid:{display:false},ticks:{color:'#5a8070',font:{size:11}}},
-            y:{beginAtZero:true,grid:{color:'rgba(255,255,255,0.04)'},ticks:{color:'#5a8070',stepSize:1}}
+            x:{grid:{display:false},ticks:{color:'#8ea3bd',font:{size:isMobileDash?9:11},maxRotation:0,minRotation:0}},
+            y:{beginAtZero:true,grid:{color:'rgba(148,163,184,0.12)'},ticks:{color:'#8ea3bd',stepSize:1}}
         }}
 });
 } else {
@@ -1703,8 +2090,8 @@ new Chart(document.getElementById('topProdChart'),{
             tooltip:{...tip}
         },
         scales:{
-            x:{beginAtZero:true,grid:{color:'rgba(255,255,255,0.04)'},ticks:{color:'#5a8070',font:{size:11}}},
-            y:{grid:{display:false},ticks:{color:'#c0d8cc',font:{size:12,weight:'600'}}}
+            x:{beginAtZero:true,grid:{color:'rgba(148,163,184,0.12)'},ticks:{color:'#8ea3bd',font:{size:isMobileDash?9:11}}},
+            y:{grid:{display:false},ticks:{color:'#bfd0e4',font:{size:isMobileDash?10:12,weight:'600'}}}
         }}
 });
 } else {
@@ -1721,8 +2108,87 @@ document.querySelectorAll('.counter').forEach(el=>{
     const tm=setInterval(()=>{v=Math.min(v+step,t);el.textContent=v;if(v>=t)clearInterval(tm);},16);
 });
 
-setTimeout(()=>location.reload(),300000);
-console.log('🚀 RH Dashboard v4.0 — C059 Bold — ESPERANCE H2O');
+const DASHBOARD_BADGES_URL = '<?= htmlspecialchars($_SERVER['PHP_SELF'], ENT_QUOTES) ?>?ajax=dashboard_badges';
+
+function setNodeText(id, value){
+    const el = document.getElementById(id);
+    if(el) el.textContent = value;
+}
+
+function flashUpdate(id){
+    const el = document.getElementById(id);
+    if(!el) return;
+    el.classList.remove('is-updating');
+    void el.offsetWidth;
+    el.classList.add('is-updating');
+}
+
+function syncNavBadge(id, value){
+    const el = document.getElementById(id);
+    if(!el) return;
+    el.textContent = value;
+    el.classList.toggle('hidden', Number(value) <= 0);
+}
+
+function applyLiveMetrics(metrics){
+    if(!metrics) return;
+    setNodeText('live-present', metrics.total_present);
+    setNodeText('live-late', metrics.total_late);
+    setNodeText('live-permissions', metrics.pend_perm);
+    setNodeText('live-advances', metrics.pend_adv);
+    setNodeText('live-stock', metrics.low_stock_count);
+    setNodeText('live-presence-sub', metrics.still_working + ' en poste');
+    setNodeText('live-abs-sub', metrics.total_abs + ' absent(s)');
+    setNodeText('live-updated-at', 'Sync ' + metrics.updated_at);
+
+    setNodeText('kpi-total-emp', metrics.total_emp);
+    setNodeText('kpi-present-inline', metrics.total_present);
+    setNodeText('kpi-present', metrics.total_present);
+    setNodeText('kpi-presence-sub', '🔵 En poste : ' + metrics.still_working + ' · 🏁 Partis : ' + metrics.total_departed);
+    setNodeText('kpi-late', metrics.total_late);
+    setNodeText('kpi-abs-sub', '🔴 Absents : ' + metrics.total_abs);
+    setNodeText('kpi-departed', metrics.total_departed);
+    setNodeText('kpi-working-sub', '⏳ Encore en poste : ' + metrics.still_working);
+    setNodeText('kpi-permissions', metrics.pend_perm);
+    setNodeText('kpi-advances', metrics.pend_adv);
+    setNodeText('qa-permissions-small', metrics.pend_perm + ' en attente');
+    setNodeText('qa-advances-small', metrics.pend_adv + ' en attente');
+    setNodeText('stock-alert-badge', metrics.low_stock_count + ' alertes');
+
+    syncNavBadge('nav-badge-home', metrics.pending_total);
+    syncNavBadge('nav-badge-rh', metrics.pending_total);
+    syncNavBadge('nav-badge-stock', metrics.low_stock_count);
+
+    ['live-badge-present','live-badge-late','live-badge-permissions','live-badge-advances','live-badge-stock']
+        .forEach(flashUpdate);
+}
+
+let dashboardPollBusy = false;
+async function pollDashboardBadges(){
+    if(dashboardPollBusy || document.hidden) return;
+    dashboardPollBusy = true;
+    try{
+        const res = await fetch(DASHBOARD_BADGES_URL, {
+            headers: {'X-Requested-With':'XMLHttpRequest','Accept':'application/json'},
+            cache: 'no-store'
+        });
+        const data = await res.json();
+        if(data && data.success && data.metrics){
+            applyLiveMetrics(data.metrics);
+        }
+    }catch(e){
+        console.warn('dashboard badges sync failed', e);
+    }finally{
+        dashboardPollBusy = false;
+    }
+}
+
+setInterval(pollDashboardBadges, 30000);
+document.addEventListener('visibilitychange', ()=>{
+    if(!document.hidden) pollDashboardBadges();
+});
+
+console.log('RH Dashboard Light Clean Pro + live badges');
 </script>
 </body>
 </html>

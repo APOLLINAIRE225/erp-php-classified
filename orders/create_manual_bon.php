@@ -222,9 +222,9 @@ $products = $pdo->query("SELECT DISTINCT name FROM products ORDER BY name")->fet
 <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 <style>
 :root{
-  --bg:#04090e; --card:#0c1b28; --card2:#0f2133; --bord:rgba(50,190,143,.13);
-  --neon:#32be8f; --neon2:#19ffa3; --red:#ff3553; --gold:#ffd060;
-  --cyan:#06b6d4; --blue:#3d8cff; --purple:#a78bfa; --orange:#ff9140;
+  --bg:#0f1726; --card:#1b263b; --card2:#22324a; --bord:rgba(50,190,143,.13);
+  --neon:#00a86b; --neon2:#00c87a; --red:#e53935; --gold:#f9a825;
+  --cyan:#06b6d4; --blue:#1976d2; --purple:#a78bfa; --orange:#f57c00;
   --text:#dff2ea; --text2:#b0d4c4; --muted:#5a7a6c;
   --gn:0 0 20px rgba(50,190,143,.38); --gr:0 0 20px rgba(255,53,83,.38);
   --fh:'Poppins',sans-serif;

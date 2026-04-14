@@ -15,6 +15,12 @@
 config.local.php
 db_config.php
 
+# Clés privées Firebase / VAPID / WebPush (NE JAMAIS COMMITTER)
+messaging/runtime/firebase_service_account.json
+messaging/runtime/vapid_keys.json
+messaging/runtime/fcm_tokens.json
+messaging/runtime/webpush_subscriptions.json
+
 # Sauvegardes base de données
 *.sql
 *.sql.gz

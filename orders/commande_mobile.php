@@ -5,7 +5,7 @@ require_once dirname(__DIR__) . '/legal/legal_bootstrap.php';
 /**
  * ════════════════════════════════════════════════════════════════
  * COMMANDE EN LIGNE MOBILE — ESPERANCE H2O
- * Style: Dark Neon Pro · C059 Bold · Mobile-First
+ * Style: Light Clean Pro · C059 Bold · Mobile-First
  * v2 — Suivi commandes · Annulation · Historique · Notifs · Logout
  * ════════════════════════════════════════════════════════════════
  */
@@ -392,6 +392,125 @@ function ensureCommerceEnhancementsStorage(PDO $pdo): void {
     }
 }
 
+function ensureDeliveryZoneStorage(PDO $pdo): void {
+    try {
+        $pdo->exec("
+            CREATE TABLE IF NOT EXISTS delivery_zones (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                company_id INT NOT NULL DEFAULT 0,
+                city_id INT NOT NULL DEFAULT 0,
+                zone_name VARCHAR(160) NOT NULL,
+                delivery_delay_label VARCHAR(80) NOT NULL DEFAULT '',
+                delivery_fee DECIMAL(12,2) NOT NULL DEFAULT 0,
+                sort_order INT NOT NULL DEFAULT 0,
+                is_active TINYINT(1) NOT NULL DEFAULT 1,
+                notes VARCHAR(255) NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_context(company_id, city_id, is_active)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        ");
+    } catch (Throwable $e) {
+    }
+}
+
+function seedDeliveryZonesForContext(PDO $pdo, int $companyId, int $cityId): void {
+    if ($companyId <= 0 || $cityId <= 0) {
+        return;
+    }
+    try {
+        $check = $pdo->prepare("SELECT COUNT(*) FROM delivery_zones WHERE company_id=? AND city_id=?");
+        $check->execute([$companyId, $cityId]);
+        if ((int)$check->fetchColumn() > 0) {
+            return;
+        }
+        $rows = [
+            ['Centre-ville', '30-45 min', 0, 10, 'Livraison prioritaire'],
+            ['Quartier residentiel', '45-60 min', 0, 20, 'Zone standard'],
+            ['Banlieue proche', '1h-1h30', 500, 30, 'Frais legers'],
+            ['Zone periurbaine', '1h30-2h', 1000, 40, 'Selon circulation'],
+            ['Zone eloignee', '2h-3h', 1500, 50, 'Confirmation WhatsApp recommandee'],
+        ];
+        $stmt = $pdo->prepare("
+            INSERT INTO delivery_zones(company_id,city_id,zone_name,delivery_delay_label,delivery_fee,sort_order,notes)
+            VALUES(?,?,?,?,?,?,?)
+        ");
+        foreach ($rows as $row) {
+            $stmt->execute([$companyId, $cityId, $row[0], $row[1], $row[2], $row[3], $row[4]]);
+        }
+    } catch (Throwable $e) {
+    }
+}
+
+function loadDeliveryZones(PDO $pdo, int $companyId, int $cityId): array {
+    if ($companyId <= 0 || $cityId <= 0) {
+        return [];
+    }
+    ensureDeliveryZoneStorage($pdo);
+    seedDeliveryZonesForContext($pdo, $companyId, $cityId);
+    try {
+        $stmt = $pdo->prepare("
+            SELECT id, zone_name, delivery_delay_label, delivery_fee, sort_order, notes
+            FROM delivery_zones
+            WHERE company_id=? AND city_id=? AND is_active=1
+            ORDER BY sort_order ASC, id ASC
+        ");
+        $stmt->execute([$companyId, $cityId]);
+        return $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+    } catch (Throwable $e) {
+        return [];
+    }
+}
+
+function getDeliveryZoneById(PDO $pdo, int $companyId, int $cityId, int $zoneId): ?array {
+    if ($companyId <= 0 || $cityId <= 0 || $zoneId <= 0) {
+        return null;
+    }
+    try {
+        $stmt = $pdo->prepare("
+            SELECT id, zone_name, delivery_delay_label, delivery_fee, sort_order, notes
+            FROM delivery_zones
+            WHERE id=? AND company_id=? AND city_id=? AND is_active=1
+            LIMIT 1
+        ");
+        $stmt->execute([$zoneId, $companyId, $cityId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    } catch (Throwable $e) {
+        return null;
+    }
+}
+
+function deliveryZoneTone(float $fee): string {
+    if ($fee <= 0) {
+        return 'ok';
+    }
+    if ($fee <= 1000) {
+        return 'mid';
+    }
+    return 'far';
+}
+
+function fetchPendingDeletionRequest(PDO $pdo, int $clientId): ?array {
+    if ($clientId <= 0) {
+        return null;
+    }
+    try {
+        $stmt = $pdo->prepare("
+            SELECT id, status, requested_at, processed_at, admin_note
+            FROM account_deletion_requests
+            WHERE client_id=? AND status='pending'
+            ORDER BY id DESC
+            LIMIT 1
+        ");
+        $stmt->execute([$clientId]);
+        $row = $stmt->fetch(PDO::FETCH_ASSOC);
+        return $row ?: null;
+    } catch (Throwable $e) {
+        return null;
+    }
+}
+
 function fetchReviewStats(PDO $pdo, array $productIds): array {
     if (!$productIds) {
         return [];
@@ -645,6 +764,35 @@ function findApplicableCoupon(PDO $pdo, int $clientId, string $code, float $subt
 }
 
 ensureCommerceEnhancementsStorage($pdo);
+ensureDeliveryZoneStorage($pdo);
+try {
+    $orderColumns = [];
+    $st = $pdo->query("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'orders'");
+    $orderColumns = $st ? $st->fetchAll(PDO::FETCH_COLUMN) : [];
+    if (!in_array('delivery_zone_id', $orderColumns, true)) {
+        $pdo->exec("ALTER TABLE orders ADD COLUMN delivery_zone_id INT NULL AFTER city_id");
+        $orderColumns[] = 'delivery_zone_id';
+    }
+    if (!in_array('delivery_zone_name', $orderColumns, true)) {
+        $pdo->exec("ALTER TABLE orders ADD COLUMN delivery_zone_name VARCHAR(160) NULL AFTER delivery_zone_id");
+        $orderColumns[] = 'delivery_zone_name';
+    }
+    if (!in_array('delivery_fee', $orderColumns, true)) {
+        $pdo->exec("ALTER TABLE orders ADD COLUMN delivery_fee DECIMAL(12,2) NOT NULL DEFAULT 0 AFTER coupon_discount");
+    }
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS whatsapp_click_logs (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            client_id INT NOT NULL DEFAULT 0,
+            order_id INT NULL,
+            action_type VARCHAR(30) NOT NULL DEFAULT 'contact',
+            target_phone VARCHAR(30) NOT NULL DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            INDEX idx_client (client_id),
+            INDEX idx_order (order_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    ");
+} catch (Throwable $e) {}
 
 /* ── Tables ── */
 try {
@@ -838,6 +986,129 @@ if($_SERVER['REQUEST_METHOD']==='POST' && !empty($_POST['action'])){
         exit;
     }
 
+    /* ── Export données client ── */
+    if($action === 'export_data'){
+        $cid = (int)($_SESSION['client_id']??0);
+        if(!$cid){echo json_encode(['success'=>false,'message'=>'Non connecté']);exit;}
+        try{
+            $client = $pdo->prepare("SELECT id,name,phone,email,created_at FROM clients WHERE id=? LIMIT 1");
+            $client->execute([$cid]);
+            $clientRow = $client->fetch(PDO::FETCH_ASSOC) ?: [];
+
+            $orders = $pdo->prepare("
+                SELECT o.id, o.order_number, o.status, o.total_amount, o.delivery_address, o.created_at,
+                       GROUP_CONCAT(CONCAT(p.name,' x',oi.quantity,' (',oi.unit_price,' CFA)') SEPARATOR ' | ') as items
+                FROM orders o
+                LEFT JOIN order_items oi ON oi.order_id = o.id
+                LEFT JOIN products p ON p.id = oi.product_id
+                WHERE o.client_id=?
+                GROUP BY o.id ORDER BY o.created_at DESC
+            ");
+            $orders->execute([$cid]);
+            $orderRows = $orders->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+            $notificationsStmt = $pdo->prepare("SELECT title,message,type,is_read,order_id,created_at FROM notifications WHERE client_id=? ORDER BY created_at DESC");
+            $notificationsStmt->execute([$cid]);
+            $notificationRows = $notificationsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+            $favoritesStmt = $pdo->prepare("
+                SELECT p.id, p.name, p.category, p.price
+                FROM client_favorites cf
+                INNER JOIN products p ON p.id = cf.product_id
+                WHERE cf.client_id=?
+                ORDER BY cf.created_at DESC
+            ");
+            $favoritesStmt->execute([$cid]);
+            $favoriteRows = $favoritesStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+            $reviewsStmt = $pdo->prepare("
+                SELECT pr.product_id, p.name AS product_name, pr.rating, pr.review_text, pr.created_at
+                FROM product_reviews pr
+                LEFT JOIN products p ON p.id = pr.product_id
+                WHERE pr.client_id=?
+                ORDER BY pr.created_at DESC
+            ");
+            $reviewsStmt->execute([$cid]);
+            $reviewRows = $reviewsStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+            $export = [
+                'export_date' => date('Y-m-d H:i:s'),
+                'application' => 'Espérance H2O',
+                'client' => $clientRow,
+                'orders' => $orderRows,
+                'notifications' => $notificationRows,
+                'favorites' => $favoriteRows,
+                'reviews' => $reviewRows,
+                'total_orders' => count($orderRows),
+                'total_spent' => array_sum(array_column(
+                    array_filter($orderRows, fn($o)=>$o['status']==='done'),
+                    'total_amount'
+                )),
+            ];
+            echo json_encode([
+                'success'=>true,
+                'filename'=>'client-export-' . $cid . '-' . date('Ymd-His') . '.json',
+                'data'=>$export,
+            ]);
+        }catch(Throwable $e){
+            echo json_encode(['success'=>false,'message'=>'Erreur export']);
+        }
+        exit;
+    }
+
+    /* ── Demande suppression de compte ── */
+    if($action === 'request_delete'){
+        $cid = (int)($_SESSION['client_id']??0);
+        if(!$cid){echo json_encode(['success'=>false,'message'=>'Non connecté']);exit;}
+        try{
+            $client = $pdo->prepare("SELECT name,phone,email FROM clients WHERE id=? LIMIT 1");
+            $client->execute([$cid]);
+            $cl = $client->fetch(PDO::FETCH_ASSOC) ?: [];
+            $pdo->exec("CREATE TABLE IF NOT EXISTS account_deletion_requests (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                client_id INT NOT NULL,
+                client_name VARCHAR(255) NOT NULL DEFAULT '',
+                client_phone VARCHAR(50) NOT NULL DEFAULT '',
+                client_email VARCHAR(190) NULL,
+                status VARCHAR(30) NOT NULL DEFAULT 'pending',
+                requested_at DATETIME NOT NULL,
+                processed_at DATETIME NULL,
+                admin_note TEXT NULL,
+                INDEX idx_client_status (client_id, status)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+            $existing = $pdo->prepare("SELECT id FROM account_deletion_requests WHERE client_id=? AND status='pending' ORDER BY id DESC LIMIT 1");
+            $existing->execute([$cid]);
+            if ($existing->fetchColumn()) {
+                echo json_encode(['success'=>false,'message'=>'Une demande est déjà en attente de traitement']);
+                exit;
+            }
+            $req = $pdo->prepare("
+                INSERT INTO account_deletion_requests(client_id,client_name,client_phone,client_email,status,requested_at)
+                VALUES(?,?,?,?, 'pending', NOW())
+            ");
+            $req->execute([
+                $cid,
+                (string)($cl['name'] ?? ''),
+                (string)($cl['phone'] ?? ''),
+                (string)($cl['email'] ?? ''),
+            ]);
+            $msg = "[SUPPRESSION COMPTE] Client #{$cid} — ".($cl['name']??'')." / ".($cl['phone']??'')." a demandé la suppression de son compte le ".date('d/m/Y à H:i');
+            $pdo->exec("CREATE TABLE IF NOT EXISTS admin_notes (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                type VARCHAR(50) NOT NULL DEFAULT 'info',
+                message TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+            $ins = $pdo->prepare("INSERT INTO admin_notes(type,message) VALUES('delete_request',?)");
+            $ins->execute([$msg]);
+            $_SESSION['delete_requested'] = true;
+            echo json_encode(['success'=>true,'message'=>'Demande envoyée à l\'administrateur']);
+        }catch(Throwable $e){
+            echo json_encode(['success'=>false,'message'=>'Erreur envoi demande']);
+        }
+        exit;
+    }
+
     if($action === 'get_notifications'){
         try{
             $cid = (int)($_SESSION['client_id']??0);
@@ -920,6 +1191,23 @@ if($_SERVER['REQUEST_METHOD']==='POST' && !empty($_POST['action'])){
             saveAbandonedCartSnapshot($pdo, $cid, $coid, $ciid, $cartItems);
             echo json_encode(['success'=>true]);
         }catch(Exception $e){echo json_encode(['success'=>false,'message'=>$e->getMessage()]);}
+        exit;
+    }
+
+    if($action === 'log_whatsapp_click'){
+        try{
+            $cid = (int)($_SESSION['client_id'] ?? 0);
+            $orderId = (int)($_POST['order_id'] ?? 0);
+            $actionType = trim((string)($_POST['click_type'] ?? 'contact'));
+            $phone = trim((string)($_POST['target_phone'] ?? ''));
+            if($cid > 0){
+                $pdo->prepare("INSERT INTO whatsapp_click_logs(client_id,order_id,action_type,target_phone) VALUES(?,?,?,?)")
+                    ->execute([$cid, $orderId ?: null, $actionType, $phone]);
+            }
+            echo json_encode(['success'=>true]);
+        }catch(Throwable $e){
+            echo json_encode(['success'=>false]);
+        }
         exit;
     }
 
@@ -1023,6 +1311,7 @@ if($_SERVER['REQUEST_METHOD']==='POST' && !empty($_POST['action'])){
             $pay       = trim($_POST['payment_method']??'cash');
             $notes     = trim($_POST['notes']??'');
             $couponCode = strtoupper(trim((string)($_POST['coupon_code'] ?? '')));
+            $deliveryZoneId = (int)($_POST['delivery_zone_id'] ?? 0);
             $items_raw = json_decode($_POST['items']??'[]',true);
 
             if($client_id<=0) throw new Exception('Client non identifié');
@@ -1036,6 +1325,8 @@ if($_SERVER['REQUEST_METHOD']==='POST' && !empty($_POST['action'])){
                 $campaignsById[(int)$campaign['id']] = $campaign;
             }
 
+            $selectedDeliveryZone = getDeliveryZoneById($pdo, $coid, $ciid, $deliveryZoneId);
+            $deliveryFee = $selectedDeliveryZone ? (float)($selectedDeliveryZone['delivery_fee'] ?? 0) : 0.0;
             $clean=[]; $total=0.0;
             foreach($items_raw as $item){
                 $type = trim((string)($item['item_type'] ?? 'product'));
@@ -1120,9 +1411,17 @@ if($_SERVER['REQUEST_METHOD']==='POST' && !empty($_POST['action'])){
                 $total = max(0, round($total - $couponDiscount, 2));
             }
 
+            $total = round($total + $deliveryFee, 2);
+
             $onum='CMD-'.date('Ymd').'-'.strtoupper(bin2hex(random_bytes(3)));
-            $pdo->prepare("INSERT INTO orders(order_number,client_id,company_id,city_id,delivery_address,payment_method,notes,total_amount,coupon_code,coupon_discount)VALUES(?,?,?,?,?,?,?,?,?,?)")
-                ->execute([$onum,$client_id,$coid,$ciid,$addr,$pay,$notes,$total,$coupon ? $coupon['code'] : null,$couponDiscount]);
+            $pdo->prepare("INSERT INTO orders(order_number,client_id,company_id,city_id,delivery_zone_id,delivery_zone_name,delivery_address,payment_method,notes,total_amount,coupon_code,coupon_discount,delivery_fee)VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)")
+                ->execute([
+                    $onum,$client_id,$coid,$ciid,
+                    $selectedDeliveryZone['id'] ?? null,
+                    $selectedDeliveryZone['zone_name'] ?? null,
+                    $addr,$pay,$notes,$total,
+                    $coupon ? $coupon['code'] : null,$couponDiscount,$deliveryFee
+                ]);
             $oid=(int)$pdo->lastInsertId();
 
             $st=$pdo->prepare("INSERT INTO order_items(order_id,product_id,product_name,quantity,unit_price,subtotal)VALUES(?,?,?,?,?,?)");
@@ -1136,6 +1435,10 @@ if($_SERVER['REQUEST_METHOD']==='POST' && !empty($_POST['action'])){
             // Notif nouvelle commande
             $pdo->prepare("INSERT INTO notifications(client_id,title,message,type,order_id)VALUES(?,?,?,?,?)")
                 ->execute([$client_id,'Commande reçue ! 🎉','Votre commande '.$onum.' a bien été enregistrée. Montant : '.number_format($total,0,'','.').' CFA.','order',$oid]);
+            if ($selectedDeliveryZone) {
+                $pdo->prepare("INSERT INTO notifications(client_id,title,message,type,order_id)VALUES(?,?,?,?,?)")
+                    ->execute([$client_id,'Zone de livraison confirmée','Zone : '.$selectedDeliveryZone['zone_name'].' · Frais : '.number_format($deliveryFee,0,'','.').' CFA.','info',$oid]);
+            }
             if ($coupon && $couponDiscount > 0) {
                 $pdo->prepare("UPDATE personalized_coupons SET status='used', used_at=NOW(), used_order_id=? WHERE id=?")
                     ->execute([$oid, (int)$coupon['id']]);
@@ -1378,9 +1681,34 @@ usort($recommendedProducts, function(array $a, array $b): int {
 $recommendedProducts = array_slice($recommendedProducts, 0, 6);
 $shopCategories = array_values(array_unique(array_filter(array_map(fn(array $p): string => trim((string)($p['category'] ?? '')), $products))));
 sort($shopCategories);
-$personalizedOffers = buildPersonalizedOffers($pdo, $client_id, $recommendedProducts);
+$heroProducts = array_values(array_filter($recommendedProducts, static function (array $product): bool {
+    return !empty($product['image_url']);
+}));
+if (count($heroProducts) < 3) {
+    $fallbackHeroProducts = array_values(array_filter($products, static function (array $product): bool {
+        return !empty($product['image_url']);
+    }));
+    foreach ($fallbackHeroProducts as $fallbackHeroProduct) {
+        $alreadyIncluded = false;
+        foreach ($heroProducts as $heroProduct) {
+            if ((int)$heroProduct['id'] === (int)$fallbackHeroProduct['id']) {
+                $alreadyIncluded = true;
+                break;
+            }
+        }
+        if (!$alreadyIncluded) {
+            $heroProducts[] = $fallbackHeroProduct;
+        }
+        if (count($heroProducts) >= 3) {
+            break;
+        }
+    }
+}
+$heroProducts = array_slice($heroProducts, 0, 3);
 $abandonedCartRecovery = processAbandonedCartRecovery($pdo, $client_id);
 $loyaltyTier = loyaltyTierMeta((string)$loyaltyProfile['vip_status']);
+$deliveryZones = loadDeliveryZones($pdo, $company_id, $city_id);
+$pendingDeletionRequest = fetchPendingDeletionRequest($pdo, $client_id);
 
 // Unread notif count
 $unread_notifs = 0;
@@ -1402,6 +1730,74 @@ function drinkIcon(string $n): string {
     if(str_contains($s,'energ')) return '⚡';
     return '🫙';
 }
+
+if (($_GET['download_export'] ?? '') === 'pdf') {
+    $cid = (int)($_SESSION['client_id'] ?? 0);
+    if ($cid <= 0) {
+        http_response_code(403);
+        exit('Non connecté');
+    }
+
+    require_once APP_ROOT . '/fpdf186/fpdf.php';
+
+    $client = $pdo->prepare("SELECT id,name,phone,email,created_at FROM clients WHERE id=? LIMIT 1");
+    $client->execute([$cid]);
+    $clientRow = $client->fetch(PDO::FETCH_ASSOC) ?: [];
+
+    $ordersStmt = $pdo->prepare("
+        SELECT o.order_number, o.status, o.total_amount, o.delivery_address, o.created_at
+        FROM orders o
+        WHERE o.client_id=?
+        ORDER BY o.created_at DESC
+        LIMIT 100
+    ");
+    $ordersStmt->execute([$cid]);
+    $orderRows = $ordersStmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+
+    $pdf = new FPDF('P', 'mm', 'A4');
+    $pdf->AddPage();
+    $pdf->SetMargins(12, 12, 12);
+    $pdf->SetAutoPageBreak(true, 12);
+    $pdf->SetFont('Arial', 'B', 16);
+    $pdf->Cell(0, 10, utf8_decode('Export client - Espérance H2O'), 0, 1, 'C');
+    $pdf->SetFont('Arial', '', 10);
+    $pdf->Cell(0, 6, utf8_decode('Généré le ' . date('d/m/Y H:i')), 0, 1, 'C');
+    $pdf->Ln(4);
+
+    $pdf->SetFont('Arial', 'B', 12);
+    $pdf->Cell(0, 8, 'Profil client', 0, 1);
+    $pdf->SetFont('Arial', '', 10);
+    foreach ([
+        'Nom' => (string)($clientRow['name'] ?? ''),
+        'Telephone' => (string)($clientRow['phone'] ?? ''),
+        'Email' => (string)($clientRow['email'] ?? ''),
+        'Inscription' => (string)($clientRow['created_at'] ?? ''),
+    ] as $label => $value) {
+        $pdf->Cell(42, 7, $label . ' :', 0, 0);
+        $pdf->Cell(0, 7, utf8_decode($value), 0, 1);
+    }
+
+    $pdf->Ln(4);
+    $pdf->SetFont('Arial', 'B', 12);
+    $pdf->Cell(0, 8, 'Commandes recentes', 0, 1);
+    $pdf->SetFont('Arial', 'B', 9);
+    $pdf->Cell(36, 7, 'Numero', 1);
+    $pdf->Cell(25, 7, 'Statut', 1);
+    $pdf->Cell(30, 7, 'Montant', 1);
+    $pdf->Cell(0, 7, 'Date', 1, 1);
+    $pdf->SetFont('Arial', '', 9);
+    foreach ($orderRows as $row) {
+        $pdf->Cell(36, 7, utf8_decode((string)$row['order_number']), 1);
+        $pdf->Cell(25, 7, utf8_decode((string)$row['status']), 1);
+        $pdf->Cell(30, 7, number_format((float)$row['total_amount'], 0, '', '.') . ' CFA', 1);
+        $pdf->Cell(0, 7, utf8_decode((string)$row['created_at']), 1, 1);
+    }
+
+    header('Content-Type: application/pdf');
+    header('Content-Disposition: attachment; filename="client-export-' . $cid . '.pdf"');
+    $pdf->Output('I', 'client-export-' . $cid . '.pdf');
+    exit;
+}
 ?>
 <!DOCTYPE html>
 <html lang="fr">
@@ -1419,13 +1815,13 @@ function drinkIcon(string $n): string {
     font-weight:700 900;
 }
 :root{
-    --bg:#04090e;--surf:#081420;--card:#0d1e2c;--card2:#122030;
-    --bord:rgba(50,190,143,.16);
-    --neon:#32be8f;--neon2:#19ffa3;--red:#ff3553;--orange:#ff9140;
-    --blue:#3d8cff;--gold:#ffd060;--cyan:#06b6d4;--purple:#a78bfa;
-    --text:#e0f2ea;--text2:#b8d8cc;--muted:#5a8070;
-    --glow:0 0 26px rgba(50,190,143,.45);
-    --glow-r:0 0 26px rgba(255,53,83,.45);
+    --bg:#f4f7fb;--surf:#ffffff;--card:#ffffff;--card2:#eef2f7;
+    --bord:rgba(0,0,0,.09);
+    --neon:#00a86b;--neon2:#00c87a;--red:#e53935;--orange:#f57c00;
+    --blue:#1976d2;--gold:#f9a825;--cyan:#0097a7;--purple:#7e57c2;
+    --text:#1a2e3a;--text2:#4a6375;--muted:#8a9fad;
+    --glow:0 2px 12px rgba(0,168,107,.22);
+    --glow-r:0 2px 12px rgba(229,57,53,.22);
     --fh:'C059','Source Serif 4','Book Antiqua',Georgia,serif;
 }
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box;}
@@ -1437,19 +1833,19 @@ body{
 }
 body::before{
     content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
-    background:radial-gradient(ellipse 65% 42% at 4% 8%,rgba(50,190,143,.08) 0%,transparent 62%),
-               radial-gradient(ellipse 52% 36% at 96% 88%,rgba(61,140,255,.07) 0%,transparent 62%);
+    background:radial-gradient(ellipse 65% 42% at 4% 8%,rgba(0,168,107,.05) 0%,transparent 62%),
+               radial-gradient(ellipse 52% 36% at 96% 88%,rgba(25,118,210,.04) 0%,transparent 62%);
 }
 body::after{
     content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
-    background-image:linear-gradient(rgba(50,190,143,.022) 1px,transparent 1px),
-                     linear-gradient(90deg,rgba(50,190,143,.022) 1px,transparent 1px);
+    background-image:linear-gradient(rgba(0,0,0,.014) 1px,transparent 1px),
+                     linear-gradient(90deg,rgba(0,0,0,.014) 1px,transparent 1px);
     background-size:46px 46px;
 }
 .wrap{position:relative;z-index:1;max-width:100%;padding:0 12px 110px;margin:0 auto;}
 
 @keyframes fadeUp{from{opacity:0;transform:translateY(18px)}to{opacity:1;transform:translateY(0)}}
-@keyframes breathe{0%,100%{box-shadow:0 0 14px rgba(50,190,143,.35)}50%{box-shadow:0 0 38px rgba(50,190,143,.85)}}
+@keyframes breathe{0%,100%{box-shadow:0 0 8px rgba(0,168,107,.2)}50%{box-shadow:0 0 20px rgba(0,168,107,.42)}}
 @keyframes spin{to{transform:rotate(360deg)}}
 @keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.05)}}
 @keyframes slideIn{from{opacity:0;transform:translateX(-15px)}to{opacity:1;transform:translateX(0)}}
@@ -1461,7 +1857,7 @@ body::after{
 /* ─── TOPBAR ─── */
 .topbar{
     position:sticky;top:0;z-index:800;
-    background:rgba(4,9,14,.97);border-bottom:1px solid var(--bord);
+    background:rgba(255,255,255,.97);border-bottom:1px solid var(--bord);
     backdrop-filter:blur(20px);padding:10px 12px;margin-bottom:0;
 }
 .topbar-row1{
@@ -1473,7 +1869,7 @@ body::after{
     width:34px;height:34px;border-radius:10px;
     background:linear-gradient(135deg,var(--neon),var(--cyan));
     display:flex;align-items:center;justify-content:center;
-    font-size:17px;color:var(--bg);box-shadow:var(--glow);
+    font-size:17px;color:#fff;box-shadow:var(--glow);
     animation:breathe 3.5s ease-in-out infinite;
 }
 .brand-txt{font-family:var(--fh);font-size:13px;font-weight:900;color:var(--text);}
@@ -1483,7 +1879,7 @@ body::after{
 .loc-pill{
     display:flex;align-items:center;gap:5px;
     padding:5px 10px;border-radius:20px;margin-top:7px;
-    background:rgba(50,190,143,.07);border:1px solid rgba(50,190,143,.2);
+    background:rgba(0,168,107,.06);border:1px solid rgba(0,168,107,.18);
 }
 .loc-pill i{font-size:9px;color:var(--neon);}
 .loc-pill span{font-family:var(--fh);font-size:10px;font-weight:900;color:var(--text2);}
@@ -1493,20 +1889,20 @@ body::after{
 .user-mini{
     display:flex;align-items:center;gap:6px;
     padding:5px 10px;border-radius:20px;
-    background:rgba(50,190,143,.08);border:1px solid rgba(50,190,143,.25);
+    background:rgba(0,168,107,.06);border:1px solid rgba(0,168,107,.2);
 }
 .user-av{
     width:26px;height:26px;border-radius:50%;
     background:linear-gradient(135deg,var(--neon),var(--cyan));
     display:flex;align-items:center;justify-content:center;
-    font-size:11px;font-weight:900;color:var(--bg);
+    font-size:11px;font-weight:900;color:#fff;
 }
 .user-name{font-family:var(--fh);font-size:10px;font-weight:900;color:var(--text);}
 
 /* Notif button */
 .notif-btn{
     position:relative;width:34px;height:34px;border-radius:50%;
-    background:rgba(255,208,96,.08);border:1.5px solid rgba(255,208,96,.25);
+    background:rgba(249,168,37,.07);border:1.5px solid rgba(249,168,37,.22);
     display:flex;align-items:center;justify-content:center;
     cursor:pointer;font-size:14px;color:var(--gold);
     transition:all .25s;-webkit-tap-highlight-color:transparent;
@@ -1518,14 +1914,14 @@ body::after{
     background:var(--red);color:#fff;font-family:var(--fh);
     font-size:9px;font-weight:900;display:flex;
     align-items:center;justify-content:center;
-    animation:notifPop .4s ease;border:1.5px solid var(--bg);
+    animation:notifPop .4s ease;border:1.5px solid #fff;
 }
 .notif-badge.hidden{display:none;}
 
 /* Logout button */
 .logout-btn{
     width:34px;height:34px;border-radius:50%;
-    background:rgba(255,53,83,.08);border:1.5px solid rgba(255,53,83,.25);
+    background:rgba(229,57,53,.07);border:1.5px solid rgba(229,57,53,.22);
     display:flex;align-items:center;justify-content:center;
     cursor:pointer;font-size:12px;color:var(--red);
     transition:all .25s;-webkit-tap-highlight-color:transparent;
@@ -1535,7 +1931,7 @@ body::after{
 
 /* ─── TABS ─── */
 .tabs{
-    display:flex;gap:5px;background:rgba(0,0,0,.3);
+    display:flex;gap:5px;background:rgba(0,0,0,.05);
     border-radius:12px;padding:4px;margin:10px 12px 0;
     overflow-x:auto;-webkit-overflow-scrolling:touch;position:relative;z-index:1;
 }
@@ -1548,11 +1944,11 @@ body::after{
     -webkit-tap-highlight-color:transparent;display:flex;align-items:center;gap:5px;
 }
 .tab.on{
-    background:rgba(50,190,143,.15);color:var(--neon);
-    border-color:rgba(50,190,143,.35);
+    background:rgba(0,168,107,.1);color:var(--neon);
+    border-color:rgba(0,168,107,.28);
 }
 .tab-count{
-    background:rgba(50,190,143,.2);color:var(--neon);
+    background:rgba(0,168,107,.15);color:var(--neon);
     width:18px;height:18px;border-radius:9px;
     font-size:9px;display:flex;align-items:center;justify-content:center;
 }
@@ -1567,8 +1963,8 @@ body::after{
     border-radius:16px;overflow:hidden;margin-bottom:12px;
 }
 .ch{
-    padding:13px 15px;border-bottom:1px solid rgba(255,255,255,.05);
-    background:rgba(0,0,0,.18);display:flex;align-items:center;
+    padding:13px 15px;border-bottom:1px solid rgba(0,0,0,.06);
+    background:rgba(0,0,0,.02);display:flex;align-items:center;
     justify-content:space-between;gap:10px;
 }
 .chtitle{font-family:var(--fh);font-size:14px;font-weight:900;color:var(--text);letter-spacing:.4px;}
@@ -1582,7 +1978,7 @@ body::after{
     display:block;margin-bottom:5px;
 }
 .fg input,.fg select,.fg textarea{
-    width:100%;padding:11px 13px;background:rgba(0,0,0,.3);
+    width:100%;padding:11px 13px;background:rgba(0,0,0,.03);
     border:1.5px solid var(--bord);border-radius:10px;color:var(--text);
     font-family:var(--fh);font-size:14px;font-weight:700;
     transition:all .25s;appearance:none;
@@ -1592,7 +1988,7 @@ body::after{
     outline:none;border-color:var(--neon);box-shadow:var(--glow);
 }
 .fg input::placeholder,.fg textarea::placeholder{color:var(--muted);}
-.fg select option{background:#0d1e2c;color:var(--text);}
+.fg select option{background:#fff;color:var(--text);}
 
 /* ─── BUTTONS ─── */
 .btn{
@@ -1603,17 +1999,17 @@ body::after{
     white-space:nowrap;-webkit-tap-highlight-color:transparent;
 }
 .btn:active{transform:scale(.96);}
-.btn-n{background:rgba(50,190,143,.1);border-color:rgba(50,190,143,.3);color:var(--neon);}
-.btn-n:hover{background:var(--neon);color:var(--bg);box-shadow:var(--glow);}
-.btn-r{background:rgba(255,53,83,.1);border-color:rgba(255,53,83,.3);color:var(--red);}
+.btn-n{background:rgba(0,168,107,.08);border-color:rgba(0,168,107,.25);color:var(--neon);}
+.btn-n:hover{background:var(--neon);color:#fff;box-shadow:var(--glow);}
+.btn-r{background:rgba(229,57,53,.08);border-color:rgba(229,57,53,.25);color:var(--red);}
 .btn-r:hover{background:var(--red);color:#fff;box-shadow:var(--glow-r);}
-.btn-g{background:rgba(255,208,96,.1);border-color:rgba(255,208,96,.3);color:var(--gold);}
-.btn-g:hover{background:var(--gold);color:var(--bg);}
+.btn-g{background:rgba(249,168,37,.08);border-color:rgba(249,168,37,.25);color:var(--gold);}
+.btn-g:hover{background:var(--gold);color:var(--text);}
 .btn-solid{
     background:linear-gradient(135deg,var(--neon),var(--cyan));
-    color:var(--bg);border:none;box-shadow:var(--glow);
+    color:#fff;border:none;box-shadow:var(--glow);
 }
-.btn-solid:hover{box-shadow:0 6px 28px rgba(50,190,143,.6);}
+.btn-solid:hover{box-shadow:0 6px 20px rgba(0,168,107,.4);}
 .btn-full{width:100%;}
 
 /* ─── PRODUCTS GRID ─── */
@@ -1629,7 +2025,7 @@ body::after{
 .pimg{
     height:110px;display:flex;align-items:center;justify-content:center;
     position:relative;overflow:hidden;
-    background:linear-gradient(135deg,rgba(50,190,143,.08),rgba(6,182,212,.05));
+    background:linear-gradient(135deg,rgba(0,168,107,.06),rgba(0,151,167,.04));
 }
 .pimg img{width:100%;height:100%;object-fit:cover;display:block;}
 .pemoji{font-size:46px;opacity:.9;}
@@ -1638,8 +2034,8 @@ body::after{
     font-family:var(--fh);font-size:9px;font-weight:900;
     padding:3px 7px;border-radius:8px;backdrop-filter:blur(8px);
 }
-.sok{background:rgba(50,190,143,.18);color:var(--neon);border:1px solid rgba(50,190,143,.3);}
-.slow{background:rgba(255,145,64,.18);color:var(--orange);border:1px solid rgba(255,145,64,.3);}
+.sok{background:rgba(0,168,107,.12);color:#006b44;border:1px solid rgba(0,168,107,.22);}
+.slow{background:rgba(245,124,0,.12);color:#9a4a00;border:1px solid rgba(245,124,0,.22);}
 .pbody{padding:9px;}
 .pname{font-family:var(--fh);font-size:12px;font-weight:900;color:var(--text);margin-bottom:4px;line-height:1.3;}
 .pprice{font-family:var(--fh);font-size:16px;font-weight:900;color:var(--neon);margin-bottom:7px;}
@@ -1647,7 +2043,7 @@ body::after{
 .qrow{display:flex;align-items:center;gap:5px;margin-bottom:7px;}
 .qbtn{
     width:30px;height:30px;border-radius:8px;
-    border:1.5px solid var(--bord);background:rgba(50,190,143,.06);
+    border:1.5px solid var(--bord);background:rgba(0,168,107,.04);
     color:var(--text2);cursor:pointer;transition:all .22s;
     display:flex;align-items:center;justify-content:center;
     font-size:12px;-webkit-tap-highlight-color:transparent;
@@ -1655,7 +2051,7 @@ body::after{
 .qbtn:active{background:var(--neon);color:var(--bg);}
 .qin{
     width:40px;text-align:center;padding:5px 3px;
-    background:rgba(0,0,0,.35);border:1.5px solid var(--bord);
+    background:rgba(0,0,0,.03);border:1.5px solid var(--bord);
     border-radius:8px;color:var(--text);font-family:var(--fh);
     font-size:12px;font-weight:900;
 }
@@ -1665,7 +2061,7 @@ body::after{
     width:100%;padding:9px;border-radius:9px;border:none;
     cursor:pointer;font-family:var(--fh);font-size:11px;font-weight:900;
     letter-spacing:.5px;background:linear-gradient(135deg,var(--neon),var(--cyan));
-    color:var(--bg);box-shadow:0 3px 14px rgba(50,190,143,.3);
+    color:#fff;box-shadow:0 3px 10px rgba(0,168,107,.22);
     transition:all .25s;-webkit-tap-highlight-color:transparent;
 }
 .badd:active{transform:scale(.96);}
@@ -1674,7 +2070,7 @@ body::after{
 .cfloat{
     position:fixed;bottom:16px;left:12px;right:12px;z-index:700;
     background:var(--card);border:1px solid var(--bord);border-radius:16px;
-    box-shadow:0 12px 44px rgba(0,0,0,.65);max-height:70vh;
+    box-shadow:0 12px 44px rgba(0,0,0,.12);max-height:70vh;
     transition:all .3s cubic-bezier(.23,1,.32,1);overflow:hidden;
 }
 .cfloat.mini{
@@ -1689,14 +2085,14 @@ body::after{
 .chd{
     display:flex;align-items:center;justify-content:space-between;gap:8px;
     padding:11px 13px;cursor:pointer;
-    background:linear-gradient(135deg,rgba(50,190,143,.15),rgba(6,182,212,.1));
+    background:linear-gradient(135deg,rgba(0,168,107,.1),rgba(0,151,167,.07));
     border-bottom:1px solid var(--bord);-webkit-tap-highlight-color:transparent;
 }
 .chico{
     width:28px;height:28px;border-radius:8px;
     background:linear-gradient(135deg,var(--neon),var(--cyan));
     display:flex;align-items:center;justify-content:center;
-    font-size:13px;color:var(--bg);
+    font-size:13px;color:#fff;
 }
 .chtxt{font-family:var(--fh);font-size:12px;font-weight:900;color:var(--text);letter-spacing:.5px;}
 .ccnt{
@@ -1704,13 +2100,13 @@ body::after{
     border-radius:50%;display:flex;align-items:center;justify-content:center;
     font-family:var(--fh);font-size:9px;font-weight:900;
 }
-.cbdy{padding:9px;max-height:230px;overflow-y:auto;background:rgba(0,0,0,.1);}
+.cbdy{padding:9px;max-height:230px;overflow-y:auto;background:rgba(0,0,0,.02);}
 .cempty{text-align:center;padding:18px;color:var(--muted);}
 .cempty i{font-size:28px;display:block;margin-bottom:7px;opacity:.1;}
 .ci{
     display:flex;align-items:center;gap:7px;padding:7px;
     border-radius:9px;border:1px solid var(--bord);
-    background:rgba(50,190,143,.03);margin-bottom:5px;
+    background:rgba(0,168,107,.02);margin-bottom:5px;
 }
 .ciico{font-size:17px;flex-shrink:0;}
 .ciinf{flex:1;min-width:0;}
@@ -1719,16 +2115,16 @@ body::after{
 .ciprice{font-family:var(--fh);font-size:11px;font-weight:900;color:var(--neon);flex-shrink:0;}
 .cid{
     width:20px;height:20px;border-radius:50%;
-    border:1px solid rgba(255,53,83,.25);background:rgba(255,53,83,.08);
+    border:1px solid rgba(229,57,53,.2);background:rgba(229,57,53,.06);
     color:var(--red);cursor:pointer;display:flex;align-items:center;
     justify-content:center;font-size:11px;transition:all .22s;flex-shrink:0;
 }
 .cid:active{background:var(--red);color:#fff;}
-.cfot{padding:11px;border-top:1px solid rgba(255,255,255,.05);background:rgba(0,0,0,.15);}
+.cfot{padding:11px;border-top:1px solid rgba(0,0,0,.06);background:rgba(0,0,0,.02);}
 .ctrow{
     display:flex;align-items:center;justify-content:space-between;
     padding:7px 11px;border-radius:9px;
-    background:rgba(50,190,143,.08);border:1px solid rgba(50,190,143,.18);
+    background:rgba(0,168,107,.06);border:1px solid rgba(0,168,107,.15);
     margin-bottom:7px;
 }
 .ctlbl{font-family:var(--fh);font-size:10px;font-weight:900;color:var(--muted);letter-spacing:1px;text-transform:uppercase;}
@@ -1736,26 +2132,26 @@ body::after{
 
 /* ─── MODAL ─── */
 .modal{
-    display:none;position:fixed;inset:0;background:rgba(0,0,0,.92);
+    display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);
     z-index:1000;align-items:flex-start;justify-content:center;
-    padding:14px;backdrop-filter:blur(12px);overflow-y:auto;
+    padding:14px;backdrop-filter:blur(10px);overflow-y:auto;
 }
 .modal.show{display:flex;}
 .mbox{
     background:var(--card);border:1px solid var(--bord);
     border-radius:18px;width:100%;max-width:480px;margin:auto;
-    box-shadow:0 24px 60px rgba(0,0,0,.75);overflow:hidden;
+    box-shadow:0 24px 60px rgba(0,0,0,.15);overflow:hidden;
 }
 .mhead{
     display:flex;align-items:center;justify-content:space-between;
-    padding:13px 15px;border-bottom:1px solid rgba(255,255,255,.05);
-    background:rgba(0,0,0,.22);
+    padding:13px 15px;border-bottom:1px solid rgba(0,0,0,.06);
+    background:rgba(0,0,0,.02);
 }
 .mtitle{font-family:var(--fh);font-size:14px;font-weight:900;color:var(--text);letter-spacing:.5px;}
 .mtitle i{color:var(--neon);}
 .mclose{
     width:30px;height:30px;border-radius:50%;
-    background:rgba(255,53,83,.1);border:1.5px solid rgba(255,53,83,.25);
+    background:rgba(229,57,53,.08);border:1.5px solid rgba(229,57,53,.2);
     color:var(--red);display:flex;align-items:center;justify-content:center;
     cursor:pointer;font-size:17px;transition:all .25s;
     -webkit-tap-highlight-color:transparent;
@@ -1770,7 +2166,7 @@ body::after{
 }
 .timeline::before{
     content:'';position:absolute;top:50%;left:0;right:0;height:2px;
-    background:rgba(255,255,255,.06);transform:translateY(-50%);z-index:0;
+    background:rgba(0,0,0,.07);transform:translateY(-50%);z-index:0;
 }
 .tl-step{
     display:flex;flex-direction:column;align-items:center;gap:4px;
@@ -1779,14 +2175,14 @@ body::after{
 .tl-dot{
     width:28px;height:28px;border-radius:50%;
     display:flex;align-items:center;justify-content:center;
-    font-size:11px;border:2px solid rgba(255,255,255,.1);
+    font-size:11px;border:2px solid rgba(0,0,0,.08);
     background:var(--card2);transition:all .4s;
 }
-.tl-dot.done{background:var(--neon);border-color:var(--neon);color:var(--bg);}
+.tl-dot.done{background:var(--neon);border-color:var(--neon);color:#fff;}
 .tl-dot.current{
     background:linear-gradient(135deg,var(--neon),var(--cyan));
-    border-color:var(--neon);color:var(--bg);
-    box-shadow:0 0 18px rgba(50,190,143,.6);
+    border-color:var(--neon);color:#fff;
+    box-shadow:0 0 14px rgba(0,168,107,.4);
     animation:breathe 2s infinite;
 }
 .tl-dot.cancelled{background:var(--red);border-color:var(--red);color:#fff;}
@@ -1808,8 +2204,8 @@ body::after{
 }
 .order-card:hover{border-color:rgba(50,190,143,.3);}
 .oc-header{
-    padding:12px 14px;border-bottom:1px solid rgba(255,255,255,.04);
-    background:rgba(0,0,0,.18);cursor:pointer;
+    padding:12px 14px;border-bottom:1px solid rgba(0,0,0,.05);
+    background:rgba(0,0,0,.02);cursor:pointer;
     -webkit-tap-highlight-color:transparent;
 }
 .oc-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px;}
@@ -1819,7 +2215,7 @@ body::after{
 .oc-total{font-family:var(--fh);font-size:15px;font-weight:900;color:var(--neon);}
 .oc-total small{font-size:9px;color:var(--muted);}
 .oc-status{margin-top:4px;display:flex;align-items:center;justify-content:space-between;}
-.oc-body{padding:13px;border-top:1px solid rgba(255,255,255,.04);}
+.oc-body{padding:13px;border-top:1px solid rgba(0,0,0,.05);}
 .oc-section-title{
     font-family:var(--fh);font-size:9px;font-weight:900;
     color:var(--muted);text-transform:uppercase;letter-spacing:1.5px;
@@ -1827,8 +2223,8 @@ body::after{
 }
 .item-row{
     display:flex;align-items:center;gap:7px;padding:7px 8px;
-    border-radius:8px;border:1px solid rgba(255,255,255,.04);
-    background:rgba(0,0,0,.12);margin-bottom:5px;
+    border-radius:8px;border:1px solid rgba(0,0,0,.05);
+    background:rgba(0,0,0,.02);margin-bottom:5px;
 }
 .ir-ico{font-size:16px;flex-shrink:0;}
 .ir-name{font-family:var(--fh);font-size:11px;font-weight:900;color:var(--text);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
@@ -1840,7 +2236,7 @@ body::after{
 .meta-pill{
     display:flex;align-items:center;gap:4px;
     padding:4px 8px;border-radius:8px;
-    background:rgba(0,0,0,.2);border:1px solid rgba(255,255,255,.06);
+    background:rgba(0,0,0,.04);border:1px solid rgba(0,0,0,.07);
     font-family:var(--fh);font-size:9px;font-weight:900;color:var(--muted);
 }
 .meta-pill i{font-size:8px;}
@@ -1852,16 +2248,16 @@ body::after{
     padding:3px 8px;border-radius:10px;display:inline-flex;
     align-items:center;gap:4px;
 }
-.bdg-n{background:rgba(50,190,143,.12);color:var(--neon);}
-.bdg-r{background:rgba(255,53,83,.12);color:var(--red);}
-.bdg-g{background:rgba(255,208,96,.12);color:var(--gold);}
-.bdg-c{background:rgba(6,182,212,.12);color:var(--cyan);}
-.bdg-p{background:rgba(167,139,250,.12);color:var(--purple);}
+.bdg-n{background:rgba(0,168,107,.1);color:#006b44;}
+.bdg-r{background:rgba(229,57,53,.1);color:#b71c1c;}
+.bdg-g{background:rgba(249,168,37,.1);color:#e65100;}
+.bdg-c{background:rgba(0,151,167,.1);color:#006064;}
+.bdg-p{background:rgba(126,87,194,.1);color:#4527a0;}
 
 /* ─── ORDER SUMMARY ─── */
 .order-summary-row{
     display:flex;align-items:center;justify-content:space-between;
-    padding:8px 0;border-bottom:1px solid rgba(255,255,255,.04);
+    padding:8px 0;border-bottom:1px solid rgba(0,0,0,.06);
 }
 .order-summary-row:last-child{border:none;}
 
@@ -1878,7 +2274,7 @@ body::after{
     white-space:nowrap;flex-shrink:0;transition:all .25s;
     -webkit-tap-highlight-color:transparent;
 }
-.ftab.on{background:rgba(50,190,143,.12);border-color:rgba(50,190,143,.35);color:var(--neon);}
+.ftab.on{background:rgba(0,168,107,.08);border-color:rgba(0,168,107,.28);color:var(--neon);}
 
 /* ─── STATS BAR ─── */
 .stats-bar{
@@ -1902,13 +2298,13 @@ body::after{
 }
 .notif-panel.open{transform:translateX(0);}
 .notif-overlay{
-    position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:899;
+    position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:899;
     opacity:0;pointer-events:none;transition:opacity .35s;backdrop-filter:blur(4px);
 }
 .notif-overlay.show{opacity:1;pointer-events:all;}
 .notif-header{
     padding:14px;border-bottom:1px solid var(--bord);
-    background:rgba(0,0,0,.3);flex-shrink:0;
+    background:rgba(0,0,0,.02);flex-shrink:0;
     display:flex;align-items:center;justify-content:space-between;
 }
 .notif-title{font-family:var(--fh);font-size:15px;font-weight:900;color:var(--text);}
@@ -1923,7 +2319,7 @@ body::after{
 .mark-read-btn:active{color:var(--neon);border-color:var(--neon);}
 .notif-close{
     width:30px;height:30px;border-radius:50%;
-    background:rgba(255,53,83,.1);border:1.5px solid rgba(255,53,83,.25);
+    background:rgba(229,57,53,.08);border:1.5px solid rgba(229,57,53,.2);
     color:var(--red);display:flex;align-items:center;justify-content:center;
     cursor:pointer;font-size:16px;
     -webkit-tap-highlight-color:transparent;
@@ -1933,23 +2329,23 @@ body::after{
 .notif-item{
     display:flex;align-items:flex-start;gap:10px;
     padding:10px;border-radius:12px;
-    background:rgba(0,0,0,.2);border:1px solid var(--bord);
+    background:rgba(0,0,0,.02);border:1px solid var(--bord);
     margin-bottom:8px;cursor:pointer;transition:all .25s;
     animation:slideDown .3s ease backwards;
     -webkit-tap-highlight-color:transparent;
 }
 .notif-item.unread{
-    background:rgba(50,190,143,.06);border-color:rgba(50,190,143,.22);
+    background:rgba(0,168,107,.04);border-color:rgba(0,168,107,.18);
 }
 .notif-item:active{transform:scale(.98);}
 .notif-ico{
     width:34px;height:34px;border-radius:10px;flex-shrink:0;
     display:flex;align-items:center;justify-content:center;font-size:16px;
 }
-.notif-ico.order{background:rgba(50,190,143,.15);}
-.notif-ico.status{background:rgba(61,140,255,.15);}
-.notif-ico.info{background:rgba(167,139,250,.15);}
-.notif-ico.promo{background:rgba(255,208,96,.15);}
+.notif-ico.order{background:rgba(0,168,107,.12);}
+.notif-ico.status{background:rgba(25,118,210,.12);}
+.notif-ico.info{background:rgba(126,87,194,.12);}
+.notif-ico.promo{background:rgba(249,168,37,.12);}
 .notif-content{flex:1;min-width:0;}
 .notif-item-title{
     font-family:var(--fh);font-size:12px;font-weight:900;color:var(--text);
@@ -1977,7 +2373,7 @@ body::after{
 
 /* ─── SPINNER ─── */
 .sp{
-    width:14px;height:14px;border:2px solid rgba(255,255,255,.2);
+    width:14px;height:14px;border:2px solid rgba(0,0,0,.1);
     border-top-color:currentColor;border-radius:50%;
     animation:spin .7s linear infinite;display:inline-block;
 }
@@ -1985,18 +2381,18 @@ body::after{
 /* ─── TOAST ─── */
 .tstack{position:fixed;bottom:18px;left:12px;right:12px;z-index:9999;display:flex;flex-direction:column;gap:6px;pointer-events:none;}
 .toast{
-    background:var(--card2);border:1px solid rgba(50,190,143,.22);
+    background:var(--card2);border:1px solid rgba(0,168,107,.18);
     border-radius:12px;padding:9px 13px;display:flex;
-    align-items:center;gap:9px;box-shadow:0 8px 28px rgba(0,0,0,.6);
+    align-items:center;gap:9px;box-shadow:0 8px 28px rgba(0,0,0,.1);
     animation:fadeUp .4s ease;pointer-events:none;position:relative;overflow:hidden;
 }
 .toast::after{
     content:'';position:absolute;bottom:0;left:0;height:2px;
     background:var(--neon);animation:progress 3.5s linear forwards;
 }
-.toast.err{border-color:rgba(255,53,83,.3);}
+.toast.err{border-color:rgba(229,57,53,.25);}
 .toast.err::after{background:var(--red);}
-.toast.warn{border-color:rgba(255,208,96,.3);}
+.toast.warn{border-color:rgba(249,168,37,.25);}
 .toast.warn::after{background:var(--gold);}
 .tico{
     width:26px;height:26px;border-radius:7px;
@@ -2015,7 +2411,7 @@ body::after{
 /* ─── SUCCESS OVERLAY ─── */
 .success-overlay{
     display:none;position:fixed;inset:0;z-index:9000;
-    background:rgba(4,9,14,.72);flex-direction:column;
+    background:rgba(244,247,251,.88);flex-direction:column;
     align-items:center;justify-content:center;padding:0;
     backdrop-filter:blur(26px);
 }
@@ -2023,9 +2419,9 @@ body::after{
 .success-box{
     position:relative;width:100%;height:100%;overflow:hidden;
     background:
-        radial-gradient(circle at top left, rgba(61,140,255,.18), transparent 30%),
-        radial-gradient(circle at top right, rgba(50,190,143,.16), transparent 28%),
-        linear-gradient(180deg, rgba(8,20,32,.98), rgba(4,9,14,.99));
+        radial-gradient(circle at top left, rgba(25,118,210,.1), transparent 30%),
+        radial-gradient(circle at top right, rgba(0,168,107,.08), transparent 28%),
+        linear-gradient(180deg, rgba(248,251,255,.99), rgba(244,247,251,.99));
     animation:fadeUp .45s ease;
 }
 .success-shell{
@@ -2038,7 +2434,7 @@ body::after{
 }
 .success-status{
     display:inline-flex;align-items:center;gap:8px;padding:9px 14px;border-radius:999px;
-    background:rgba(50,190,143,.12);border:1px solid rgba(50,190,143,.28);
+    background:rgba(0,168,107,.08);border:1px solid rgba(0,168,107,.22);
     color:var(--neon);font-size:12px;font-weight:900;box-shadow:var(--glow);
 }
 .success-order-meta{
@@ -2046,24 +2442,24 @@ body::after{
 }
 .smeta-pill{
     display:inline-flex;align-items:center;gap:6px;padding:8px 11px;border-radius:999px;
-    background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);
+    background:rgba(0,0,0,.04);border:1px solid rgba(0,0,0,.07);
     font-size:10px;color:var(--text2);font-weight:900;
 }
 .snum{
     display:inline-flex;align-items:center;gap:8px;padding:9px 14px;border-radius:12px;
-    background:rgba(50,190,143,.1);border:1.5px solid rgba(50,190,143,.3);
+    background:rgba(0,168,107,.08);border:1.5px solid rgba(0,168,107,.22);
     font-family:var(--fh);font-size:14px;font-weight:900;color:var(--neon);
     letter-spacing:1px;
 }
 .success-stage{
-    position:relative;background:rgba(13,30,44,.72);
-    border:1px solid rgba(255,255,255,.07);border-radius:28px;
-    padding:22px 16px 18px;box-shadow:0 24px 70px rgba(0,0,0,.5);
+    position:relative;background:rgba(255,255,255,.85);
+    border:1px solid rgba(0,0,0,.08);border-radius:28px;
+    padding:22px 16px 18px;box-shadow:0 8px 30px rgba(0,0,0,.09);
     overflow:hidden;
 }
 .success-stage::before{
     content:'';position:absolute;inset:auto -10% -60% -10%;height:220px;
-    background:radial-gradient(circle, rgba(61,140,255,.18), transparent 60%);
+    background:radial-gradient(circle, rgba(25,118,210,.08), transparent 60%);
     pointer-events:none;
 }
 .loader-block{
@@ -2075,8 +2471,8 @@ body::after{
 }
 .loader-ring{
     width:70px;height:70px;border-radius:50%;
-    border:4px solid rgba(61,140,255,.16);border-top-color:var(--cyan);border-right-color:var(--neon);
-    animation:spin 1s linear infinite;box-shadow:0 0 30px rgba(61,140,255,.18);
+    border:4px solid rgba(25,118,210,.1);border-top-color:var(--cyan);border-right-color:var(--neon);
+    animation:spin 1s linear infinite;box-shadow:0 0 20px rgba(25,118,210,.1);
 }
 .loader-text{font-size:14px;color:var(--text);font-weight:900;text-align:center;}
 .loader-sub{font-size:11px;color:var(--muted);text-align:center;}
@@ -2089,13 +2485,13 @@ body::after{
 }
 .check-circle{
     position:relative;width:88px;height:88px;border-radius:50%;
-    background:radial-gradient(circle at 30% 30%, rgba(255,255,255,.24), rgba(50,190,143,.18));
-    border:2px solid rgba(50,190,143,.34);display:flex;align-items:center;justify-content:center;
-    box-shadow:0 0 40px rgba(50,190,143,.28);animation:checkPop .75s cubic-bezier(.2,.9,.25,1.1) forwards;
+    background:radial-gradient(circle at 30% 30%, rgba(255,255,255,.6), rgba(0,168,107,.12));
+    border:2px solid rgba(0,168,107,.28);display:flex;align-items:center;justify-content:center;
+    box-shadow:0 0 28px rgba(0,168,107,.2);animation:checkPop .75s cubic-bezier(.2,.9,.25,1.1) forwards;
 }
 .check-circle::after{
     content:'';position:absolute;inset:-8px;border-radius:50%;border:1px solid rgba(50,190,143,.16);
-    animation:pulseHalo 1.8s ease infinite;
+    animation:pulseHalo 1.8s ease infinite;border:1px solid rgba(0,168,107,.14);
 }
 .check-mark{
     font-size:42px;color:var(--neon);transform:scale(.2);opacity:0;animation:tickIn .45s ease .28s forwards;
@@ -2109,18 +2505,18 @@ body::after{
 .vehicle-zone{
     position:relative;height:140px;border-radius:24px;overflow:hidden;
     background:
-        linear-gradient(180deg, rgba(61,140,255,.08), rgba(8,20,32,.16)),
-        linear-gradient(0deg, rgba(255,255,255,.04), rgba(255,255,255,.04));
-    border:1px solid rgba(255,255,255,.06);
+        linear-gradient(180deg, rgba(25,118,210,.05), rgba(244,247,251,.08)),
+        linear-gradient(0deg, rgba(0,0,0,.02), rgba(0,0,0,.02));
+    border:1px solid rgba(0,0,0,.08);
 }
 .vehicle-road{
     position:absolute;left:8%;right:8%;bottom:32px;height:10px;border-radius:999px;
-    background:linear-gradient(90deg, rgba(255,255,255,.05), rgba(255,255,255,.14), rgba(255,255,255,.05));
+    background:linear-gradient(90deg, rgba(0,0,0,.05), rgba(0,0,0,.12), rgba(0,0,0,.05));
 }
 .vehicle-road::after{
     content:'';position:absolute;left:0;right:0;top:50%;height:2px;transform:translateY(-50%);
-    background:repeating-linear-gradient(90deg, rgba(255,255,255,.55) 0 24px, transparent 24px 44px);
-    opacity:.35;
+    background:repeating-linear-gradient(90deg, rgba(0,0,0,.3) 0 24px, transparent 24px 44px);
+    opacity:.25;
 }
 .truck-wrap{
     position:absolute;left:-34%;bottom:38px;width:190px;
@@ -2128,37 +2524,37 @@ body::after{
 }
 .truck{
     position:relative;display:flex;align-items:flex-end;gap:0;
-    filter:drop-shadow(0 18px 18px rgba(0,0,0,.35)) drop-shadow(0 0 16px rgba(50,190,143,.24));
+    filter:drop-shadow(0 10px 10px rgba(0,0,0,.15)) drop-shadow(0 0 10px rgba(0,168,107,.15));
 }
 .truck-body{
     width:118px;height:44px;border-radius:16px 10px 12px 12px;
-    background:linear-gradient(135deg, #20d0a6, #3d8cff);position:relative;
-    box-shadow:0 0 22px rgba(61,140,255,.28);
+    background:linear-gradient(135deg, #00a86b, #1976d2);position:relative;
+    box-shadow:0 0 14px rgba(25,118,210,.15);
 }
 .truck-body::before{
     content:'';position:absolute;left:12px;right:18px;top:10px;height:10px;border-radius:10px;
-    background:rgba(255,255,255,.22);
+    background:rgba(255,255,255,.3);
 }
 .truck-cabin{
     width:48px;height:34px;border-radius:12px 12px 10px 4px;
-    background:linear-gradient(135deg, #7ae7ff, #4da1ff);margin-left:-6px;position:relative;
+    background:linear-gradient(135deg, #64d8f0, #4da1ff);margin-left:-6px;position:relative;
 }
 .truck-cabin::before{
     content:'';position:absolute;left:10px;right:8px;top:6px;height:12px;border-radius:7px;
-    background:rgba(4,9,14,.42);
+    background:rgba(244,247,251,.55);
 }
 .truck-wheel,.bike-wheel{
     position:absolute;bottom:-10px;width:22px;height:22px;border-radius:50%;
-    background:#0d131b;border:4px solid #7adfff;animation:spin .55s linear infinite;
+    background:#dde8f0;border:4px solid #0097a7;animation:spin .55s linear infinite;
 }
 .truck-wheel::after,.bike-wheel::after{
-    content:'';position:absolute;inset:4px;border-radius:50%;background:#90f6ff;
+    content:'';position:absolute;inset:4px;border-radius:50%;background:#64d8f0;
 }
 .truck-wheel.w1{left:24px;}
 .truck-wheel.w2{left:126px;}
 .vehicle-shadow{
     position:absolute;left:20px;right:14px;bottom:-18px;height:18px;border-radius:50%;
-    background:radial-gradient(circle, rgba(0,0,0,.45), transparent 70%);
+    background:radial-gradient(circle, rgba(0,0,0,.18), transparent 70%);
     filter:blur(4px);
 }
 .prep-line{
@@ -2166,7 +2562,7 @@ body::after{
 }
 .prep-line i,.eta-badge,.notify-bubble i,.thanks-pill i,.map-pin i,.success-status i{animation:softBounce 2s ease infinite;}
 .bike{
-    position:absolute;left:-16%;bottom:76px;font-size:32px;filter:drop-shadow(0 0 12px rgba(61,140,255,.35));
+    position:absolute;left:-16%;bottom:76px;font-size:32px;filter:drop-shadow(0 0 8px rgba(25,118,210,.2));
     animation:bikeRush 2.9s ease-in-out .6s 1 forwards;
 }
 .timeline-pro{
@@ -2174,7 +2570,7 @@ body::after{
 }
 .tl-pro-step{
     position:relative;padding:12px 8px 10px;border-radius:18px;
-    background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);
+    background:rgba(0,0,0,.02);border:1px solid rgba(0,0,0,.07);
     text-align:center;overflow:hidden;
 }
 .tl-pro-step::after{
@@ -2182,21 +2578,21 @@ body::after{
     background:linear-gradient(90deg, var(--cyan), var(--neon));transition:width .65s ease;
 }
 .tl-pro-step.done::after,.tl-pro-step.current::after{width:100%;}
-.tl-pro-step.done{border-color:rgba(50,190,143,.25);background:rgba(50,190,143,.06);}
-.tl-pro-step.current{border-color:rgba(61,140,255,.25);background:rgba(61,140,255,.07);box-shadow:0 0 20px rgba(61,140,255,.12);}
+.tl-pro-step.done{border-color:rgba(0,168,107,.2);background:rgba(0,168,107,.04);}
+.tl-pro-step.current{border-color:rgba(25,118,210,.2);background:rgba(25,118,210,.05);box-shadow:0 0 14px rgba(25,118,210,.08);}
 .tl-pro-dot{
     width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;
-    margin:0 auto 8px;background:rgba(255,255,255,.06);color:var(--muted);font-size:15px;
+    margin:0 auto 8px;background:rgba(0,0,0,.05);color:var(--muted);font-size:15px;
 }
-.tl-pro-step.done .tl-pro-dot{background:rgba(50,190,143,.18);color:var(--neon);}
-.tl-pro-step.current .tl-pro-dot{background:rgba(61,140,255,.18);color:var(--cyan);animation:pulse 1.5s ease infinite;}
+.tl-pro-step.done .tl-pro-dot{background:rgba(0,168,107,.12);color:var(--neon);}
+.tl-pro-step.current .tl-pro-dot{background:rgba(25,118,210,.12);color:var(--cyan);animation:pulse 1.5s ease infinite;}
 .tl-pro-title{font-size:10px;color:var(--text);font-weight:900;}
 .tl-pro-sub{font-size:9px;color:var(--muted);margin-top:4px;font-weight:800;}
 .grid-premium{
     display:grid;grid-template-columns:1.18fr .82fr;gap:12px;
 }
 .map-card,.eta-card,.notify-card,.thanks-card{
-    background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.07);border-radius:22px;padding:14px;
+    background:rgba(0,0,0,.02);border:1px solid rgba(0,0,0,.07);border-radius:22px;padding:14px;
 }
 .map-card h3,.eta-card h3,.notify-card h3,.thanks-card h3{
     font-size:12px;color:var(--text);margin-bottom:10px;
@@ -2204,36 +2600,36 @@ body::after{
 .fake-map{
     position:relative;height:190px;border-radius:18px;overflow:hidden;
     background:
-        radial-gradient(circle at 18% 22%, rgba(61,140,255,.2), transparent 22%),
-        radial-gradient(circle at 78% 68%, rgba(50,190,143,.18), transparent 24%),
-        linear-gradient(135deg, rgba(9,18,28,.9), rgba(18,32,48,.95));
-    border:1px solid rgba(255,255,255,.08);
+        radial-gradient(circle at 18% 22%, rgba(25,118,210,.1), transparent 22%),
+        radial-gradient(circle at 78% 68%, rgba(0,168,107,.08), transparent 24%),
+        linear-gradient(135deg, rgba(235,244,255,.95), rgba(240,252,246,.95));
+    border:1px solid rgba(0,0,0,.08);
 }
 .fake-map::before,.fake-map::after{
     content:'';position:absolute;inset:0;pointer-events:none;
 }
 .fake-map::before{
     background:
-        linear-gradient(90deg, transparent 8%, rgba(255,255,255,.06) 8% 10%, transparent 10% 18%, rgba(255,255,255,.05) 18% 20%, transparent 20% 100%),
-        linear-gradient(transparent 18%, rgba(255,255,255,.05) 18% 20%, transparent 20% 48%, rgba(255,255,255,.05) 48% 50%, transparent 50% 100%);
+        linear-gradient(90deg, transparent 8%, rgba(0,0,0,.04) 8% 10%, transparent 10% 18%, rgba(0,0,0,.03) 18% 20%, transparent 20% 100%),
+        linear-gradient(transparent 18%, rgba(0,0,0,.03) 18% 20%, transparent 20% 48%, rgba(0,0,0,.03) 48% 50%, transparent 50% 100%);
     opacity:.9;
 }
 .fake-map::after{
     background:
-        radial-gradient(circle at 24% 28%, rgba(50,190,143,.18), transparent 10%),
-        radial-gradient(circle at 76% 72%, rgba(61,140,255,.18), transparent 12%);
+        radial-gradient(circle at 24% 28%, rgba(0,168,107,.12), transparent 10%),
+        radial-gradient(circle at 76% 72%, rgba(25,118,210,.12), transparent 12%);
 }
 .map-pin{
     position:absolute;display:flex;align-items:center;gap:6px;padding:7px 9px;border-radius:999px;
-    font-size:10px;font-weight:900;border:1px solid rgba(255,255,255,.12);background:rgba(4,9,14,.7);backdrop-filter:blur(8px);
+    font-size:10px;font-weight:900;border:1px solid rgba(0,0,0,.1);background:rgba(255,255,255,.85);backdrop-filter:blur(8px);
 }
 .map-pin.store{left:18%;top:22%;color:var(--neon);}
 .map-pin.city{left:58%;top:62%;color:var(--cyan);}
 .map-pin.home{right:12%;bottom:18%;color:var(--gold);}
 .route-dot{
     position:absolute;width:16px;height:16px;border-radius:50%;
-    background:radial-gradient(circle, #fff 0 25%, #32be8f 28% 100%);
-    box-shadow:0 0 0 6px rgba(50,190,143,.12),0 0 22px rgba(50,190,143,.45);
+    background:radial-gradient(circle, #fff 0 25%, #00a86b 28% 100%);
+    box-shadow:0 0 0 6px rgba(0,168,107,.1),0 0 16px rgba(0,168,107,.35);
     animation:routeMove 5.8s ease-in-out infinite;
 }
 .eta-live{
@@ -2246,28 +2642,28 @@ body::after{
 .eta-range{color:var(--gold);}
 .eta-badge{
     display:inline-flex;align-items:center;gap:8px;padding:9px 12px;border-radius:999px;
-    background:rgba(61,140,255,.12);border:1px solid rgba(61,140,255,.24);color:#9fd0ff;
+    background:rgba(25,118,210,.08);border:1px solid rgba(25,118,210,.2);color:#1565c0;
     font-size:11px;font-weight:900;animation:pulse 1.8s ease infinite;
 }
 .eta-progress{
-    position:relative;height:10px;border-radius:999px;background:rgba(255,255,255,.06);overflow:hidden;margin-top:12px;
+    position:relative;height:10px;border-radius:999px;background:rgba(0,0,0,.07);overflow:hidden;margin-top:12px;
 }
 .eta-progress-bar{
     position:absolute;inset:0 auto 0 0;width:42%;
-    background:linear-gradient(90deg, var(--cyan), var(--neon), #b9fff0);
+    background:linear-gradient(90deg, var(--cyan), var(--neon), #80ffe8);
     border-radius:999px;animation:etaBar 8s ease-in-out infinite;
 }
 .notify-list{display:flex;flex-direction:column;gap:9px;}
 .notify-bubble{
     display:flex;align-items:center;gap:10px;padding:11px 12px;border-radius:18px;
-    background:rgba(0,0,0,.22);border:1px solid rgba(255,255,255,.07);font-size:11px;color:var(--text2);font-weight:800;
+    background:rgba(0,0,0,.03);border:1px solid rgba(0,0,0,.07);font-size:11px;color:var(--text2);font-weight:800;
 }
 .notify-bubble strong{display:block;color:var(--text);font-size:11px;}
 .notify-bubble small{display:block;color:var(--muted);font-size:9px;margin-top:2px;}
 .thanks-pill{
     display:flex;align-items:flex-start;gap:12px;padding:14px;border-radius:20px;
-    background:linear-gradient(135deg, rgba(50,190,143,.08), rgba(61,140,255,.08));
-    border:1px solid rgba(50,190,143,.18);
+    background:linear-gradient(135deg, rgba(0,168,107,.05), rgba(25,118,210,.05));
+    border:1px solid rgba(0,168,107,.15);
 }
 .thanks-pill h3{margin:0 0 5px 0;}
 .thanks-pill p{font-size:11px;color:var(--text2);line-height:1.65;font-weight:800;}
@@ -2278,7 +2674,7 @@ body::after{
     min-height:54px;border-radius:18px;padding:12px 14px;
 }
 .success-btn.ok{
-    background:linear-gradient(135deg, var(--neon), var(--cyan));color:var(--bg);box-shadow:var(--glow);
+    background:linear-gradient(135deg, var(--neon), var(--cyan));color:#fff;box-shadow:var(--glow);
 }
 .success-close-hint{
     text-align:center;font-size:10px;color:var(--muted);font-weight:900;
@@ -2343,16 +2739,16 @@ body::after{
 
 /* ─── CONFIRM DIALOG ─── */
 .confirm-modal{
-    display:none;position:fixed;inset:0;background:rgba(0,0,0,.93);
+    display:none;position:fixed;inset:0;background:rgba(0,0,0,.55);
     z-index:2000;align-items:center;justify-content:center;
-    padding:20px;backdrop-filter:blur(14px);
+    padding:20px;backdrop-filter:blur(12px);
 }
 .confirm-modal.show{display:flex;}
 .confirm-box{
-    background:var(--card);border:1px solid rgba(255,53,83,.3);
+    background:var(--card);border:1px solid rgba(229,57,53,.2);
     border-radius:18px;width:100%;max-width:320px;
     padding:24px;text-align:center;
-    box-shadow:0 24px 60px rgba(0,0,0,.8);
+    box-shadow:0 24px 60px rgba(0,0,0,.15);
 }
 .confirm-ico{font-size:46px;display:block;margin-bottom:12px;}
 .confirm-title{font-family:var(--fh);font-size:16px;font-weight:900;color:var(--text);margin-bottom:8px;}
@@ -2361,98 +2757,98 @@ body::after{
 
 /* ─── SKELETON ─── */
 .skel{
-    background:linear-gradient(90deg,rgba(255,255,255,.04) 25%,rgba(255,255,255,.08) 50%,rgba(255,255,255,.04) 75%);
+    background:linear-gradient(90deg,rgba(0,0,0,.05) 25%,rgba(0,0,0,.09) 50%,rgba(0,0,0,.05) 75%);
     background-size:200% 100%;
     animation:shimmer 1.5s infinite;
     border-radius:8px;height:14px;
 }
 
 /* ─── PROMOTIONS ─── */
-.promo-hero{margin:2px 0 14px;padding:16px;border-radius:18px;border:1px solid rgba(255,145,64,.28);background:linear-gradient(135deg,rgba(255,53,83,.15),rgba(255,145,64,.12));box-shadow:0 12px 24px rgba(0,0,0,.16);}
+.promo-hero{margin:2px 0 14px;padding:16px;border-radius:18px;border:1px solid rgba(245,124,0,.22);background:linear-gradient(135deg,rgba(229,57,53,.08),rgba(245,124,0,.06));box-shadow:0 4px 12px rgba(0,0,0,.07);}
 .promo-hero-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;}
-.promo-hero-kicker{font-size:10px;letter-spacing:1.8px;text-transform:uppercase;color:#ffd7bd;font-family:var(--fh);}
-.promo-hero h3{font-size:19px;line-height:1.15;color:#fff4ea;margin:2px 0 4px}
-.promo-hero p{font-size:11px;color:#ffd7bd}
-.promo-hero-stat{padding:10px 12px;border-radius:14px;border:1px solid rgba(255,255,255,.1);background:rgba(6,8,12,.22);text-align:right;min-width:112px}
-.promo-hero-stat strong{display:block;font-size:22px;color:#fff}
-.promo-hero-stat span{font-size:10px;color:#ffd7bd}
+.promo-hero-kicker{font-size:10px;letter-spacing:1.8px;text-transform:uppercase;color:#7a3500;font-family:var(--fh);}
+.promo-hero h3{font-size:19px;line-height:1.15;color:#3a1a00;margin:2px 0 4px}
+.promo-hero p{font-size:11px;color:#7a3500}
+.promo-hero-stat{padding:10px 12px;border-radius:14px;border:1px solid rgba(0,0,0,.1);background:rgba(255,255,255,.55);text-align:right;min-width:112px}
+.promo-hero-stat strong{display:block;font-size:22px;color:var(--text)}
+.promo-hero-stat span{font-size:10px;color:#7a3500}
 .promo-toolbar{display:flex;flex-direction:column;gap:10px;margin-bottom:14px}
 .promo-filters,.promo-sorts{display:flex;gap:8px;overflow:auto;padding-bottom:2px;scrollbar-width:none}
 .promo-filters::-webkit-scrollbar,.promo-sorts::-webkit-scrollbar{display:none}
-.promo-chip{white-space:nowrap;border-radius:999px;padding:9px 13px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.03);color:var(--text2);font-family:var(--fh);font-size:10px;font-weight:900;letter-spacing:.5px}
-.promo-chip.on{background:rgba(255,145,64,.16);border-color:rgba(255,145,64,.4);color:#ffe1cf}
+.promo-chip{white-space:nowrap;border-radius:999px;padding:9px 13px;border:1px solid rgba(0,0,0,.09);background:rgba(0,0,0,.03);color:var(--text2);font-family:var(--fh);font-size:10px;font-weight:900;letter-spacing:.5px}
+.promo-chip.on{background:rgba(245,124,0,.1);border-color:rgba(245,124,0,.3);color:#9a4000}
 .promo-grid{display:grid;gap:12px}
-.promo-card{border-radius:18px;border:1px solid rgba(255,145,64,.2);background:linear-gradient(180deg,rgba(20,29,37,.96),rgba(13,21,31,.96));box-shadow:0 18px 34px rgba(0,0,0,.22);overflow:hidden}
+.promo-card{border-radius:18px;border:1px solid rgba(245,124,0,.15);background:linear-gradient(180deg,rgba(255,255,255,.98),rgba(250,252,255,.98));box-shadow:0 4px 14px rgba(0,0,0,.07);overflow:hidden}
 .promo-card-head{display:flex;gap:12px;padding:14px 14px 0}
-.promo-card-media{width:78px;height:78px;border-radius:16px;overflow:hidden;background:linear-gradient(135deg,rgba(255,145,64,.18),rgba(255,208,96,.08));display:flex;align-items:center;justify-content:center;font-size:30px;flex-shrink:0}
+.promo-card-media{width:78px;height:78px;border-radius:16px;overflow:hidden;background:linear-gradient(135deg,rgba(245,124,0,.1),rgba(249,168,37,.07));display:flex;align-items:center;justify-content:center;font-size:30px;flex-shrink:0}
 .promo-card-media img{width:100%;height:100%;object-fit:cover}
 .promo-badges{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px}
 .promo-badge{border-radius:999px;padding:4px 9px;font-size:9px;font-weight:900;letter-spacing:.5px;text-transform:uppercase}
-.promo-badge.main{background:rgba(255,53,83,.16);color:#ff8da0;border:1px solid rgba(255,53,83,.36)}
-.promo-badge.discount{background:rgba(255,145,64,.16);color:#ffc193;border:1px solid rgba(255,145,64,.36)}
-.promo-badge.flash{background:rgba(255,208,96,.15);color:#ffe08b;border:1px solid rgba(255,208,96,.34)}
-.promo-badge.pack{background:rgba(61,140,255,.15);color:#9ec4ff;border:1px solid rgba(61,140,255,.34)}
+.promo-badge.main{background:rgba(229,57,53,.1);color:#c62828;border:1px solid rgba(229,57,53,.25)}
+.promo-badge.discount{background:rgba(245,124,0,.1);color:#e65100;border:1px solid rgba(245,124,0,.25)}
+.promo-badge.flash{background:rgba(249,168,37,.1);color:#f57f17;border:1px solid rgba(249,168,37,.25)}
+.promo-badge.pack{background:rgba(25,118,210,.1);color:#1565c0;border:1px solid rgba(25,118,210,.25)}
 .promo-card-title{font-size:15px;line-height:1.25}
 .promo-card-sub{font-size:11px;color:var(--muted);margin-top:4px}
 .promo-card-body{padding:12px 14px 14px}
-.promo-price-old{text-decoration:line-through;color:#9ca8a3;font-size:12px}
-.promo-price-new{color:var(--neon2);font-size:22px;line-height:1.1}
+.promo-price-old{text-decoration:line-through;color:#8a9fad;font-size:12px}
+.promo-price-new{color:var(--neon);font-size:22px;line-height:1.1}
 .promo-meta-line{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:10px;font-size:11px}
-.promo-stock{color:#ffe1cf}
+.promo-stock{color:#a34500}
 .promo-timer{color:var(--gold);font-weight:900}
 .promo-pack-list{margin:10px 0 0;padding:0;list-style:none;display:flex;flex-direction:column;gap:6px}
-.promo-pack-list li{display:flex;justify-content:space-between;gap:10px;font-size:11px;color:var(--text2);padding:7px 9px;border-radius:10px;background:rgba(255,255,255,.03)}
+.promo-pack-list li{display:flex;justify-content:space-between;gap:10px;font-size:11px;color:var(--text2);padding:7px 9px;border-radius:10px;background:rgba(0,0,0,.03)}
 .promo-actions{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:14px}
 .promo-qty{display:flex;align-items:center;gap:8px}
 .promo-disabled{opacity:.55;filter:grayscale(.08)}
-.promo-empty{padding:28px 14px;text-align:center;border:1px dashed rgba(255,145,64,.2);border-radius:18px;color:var(--muted)}
+.promo-empty{padding:28px 14px;text-align:center;border:1px dashed rgba(245,124,0,.18);border-radius:18px;color:var(--muted)}
 .shop-tools{display:grid;gap:10px;margin:10px 0 14px}
-.shop-search{width:100%;padding:13px 15px;border-radius:14px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.03);color:var(--text);font-family:var(--fh);font-size:12px;font-weight:900}
+.shop-search{width:100%;padding:13px 15px;border-radius:14px;border:1px solid rgba(0,0,0,.09);background:rgba(0,0,0,.03);color:var(--text);font-family:var(--fh);font-size:12px;font-weight:900}
 .shop-row{display:flex;gap:8px;overflow:auto;scrollbar-width:none}
 .shop-row::-webkit-scrollbar{display:none}
-.shop-pill{white-space:nowrap;border-radius:999px;padding:9px 13px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.03);color:var(--text2);font-family:var(--fh);font-size:10px;font-weight:900}
-.shop-pill.on{background:rgba(50,190,143,.12);border-color:rgba(50,190,143,.35);color:var(--neon)}
+.shop-pill{white-space:nowrap;border-radius:999px;padding:9px 13px;border:1px solid rgba(0,0,0,.09);background:rgba(0,0,0,.03);color:var(--text2);font-family:var(--fh);font-size:10px;font-weight:900}
+.shop-pill.on{background:rgba(0,168,107,.08);border-color:rgba(0,168,107,.28);color:var(--neon)}
 .recommend-strip{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:0 0 14px}
-.recommend-card{border-radius:16px;border:1px solid rgba(50,190,143,.14);background:linear-gradient(180deg,rgba(13,30,44,.92),rgba(10,18,28,.92));padding:12px}
+.recommend-card{border-radius:16px;border:1px solid rgba(0,168,107,.1);background:linear-gradient(180deg,rgba(255,255,255,.97),rgba(248,252,250,.97));padding:12px}
 .recommend-top{display:flex;gap:10px;align-items:center}
-.recommend-media{width:54px;height:54px;border-radius:12px;overflow:hidden;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.05);font-size:24px;flex-shrink:0}
+.recommend-media{width:54px;height:54px;border-radius:12px;overflow:hidden;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.05);font-size:24px;flex-shrink:0}
 .recommend-media img{width:100%;height:100%;object-fit:cover}
 .recommend-name{font-size:11px;line-height:1.35}
 .recommend-meta{font-size:9px;color:var(--muted);margin-top:2px}
 .rating-row{display:flex;align-items:center;gap:6px;margin:6px 0 8px}
 .stars{letter-spacing:1px;color:var(--gold);font-size:10px}
 .rating-txt{font-size:9px;color:var(--muted)}
-.fav-btn{position:absolute;top:8px;right:8px;width:34px;height:34px;border-radius:50%;border:1px solid rgba(255,255,255,.1);background:rgba(4,9,14,.66);color:#fff;display:flex;align-items:center;justify-content:center;z-index:2}
-.fav-btn.on{color:#ff6b81;border-color:rgba(255,107,129,.3);background:rgba(255,107,129,.12)}
+.fav-btn{position:absolute;top:8px;right:8px;width:34px;height:34px;border-radius:50%;border:1px solid rgba(0,0,0,.1);background:rgba(255,255,255,.85);color:var(--text);display:flex;align-items:center;justify-content:center;z-index:2}
+.fav-btn.on{color:#e53935;border-color:rgba(229,57,53,.25);background:rgba(229,57,53,.08)}
 .pimg{position:relative}
 .pcard.hidden-by-filter{display:none}
 .product-actions{display:flex;gap:7px;margin-top:10px}
-.ghost-btn{flex:1;border-radius:12px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.03);color:var(--text2);font-family:var(--fh);font-size:10px;font-weight:900;padding:10px 8px}
-.ghost-btn:hover{border-color:rgba(50,190,143,.25);color:var(--neon)}
-.review-card{padding:10px;border-radius:12px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);margin-bottom:8px}
+.ghost-btn{flex:1;border-radius:12px;border:1px solid rgba(0,0,0,.09);background:rgba(0,0,0,.03);color:var(--text2);font-family:var(--fh);font-size:10px;font-weight:900;padding:10px 8px}
+.ghost-btn:hover{border-color:rgba(0,168,107,.22);color:var(--neon)}
+.review-card{padding:10px;border-radius:12px;background:rgba(0,0,0,.02);border:1px solid rgba(0,0,0,.06);margin-bottom:8px}
 .review-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px}
 .review-name{font-size:11px;color:var(--text);font-weight:900}
 .review-date{font-size:9px;color:var(--muted)}
 .review-text{font-size:11px;color:var(--text2);line-height:1.6}
 .review-form{display:grid;gap:10px;margin-top:12px}
-.review-textarea{width:100%;min-height:88px;padding:12px;border-radius:12px;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.03);color:var(--text);font-family:var(--fh);font-size:11px}
-.review-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border-radius:12px;background:rgba(255,208,96,.08);border:1px solid rgba(255,208,96,.18);margin-bottom:12px}
+.review-textarea{width:100%;min-height:88px;padding:12px;border-radius:12px;border:1px solid rgba(0,0,0,.1);background:rgba(0,0,0,.02);color:var(--text);font-family:var(--fh);font-size:11px}
+.review-summary{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border-radius:12px;background:rgba(249,168,37,.07);border:1px solid rgba(249,168,37,.15);margin-bottom:12px}
 .review-empty{padding:14px;text-align:center;color:var(--muted);font-size:11px}
-.loyalty-card{margin:0 0 14px;padding:15px 16px;border-radius:18px;border:1px solid rgba(255,208,96,.22);background:linear-gradient(135deg,rgba(255,208,96,.12),rgba(61,140,255,.08))}
+.loyalty-card{margin:0 0 14px;padding:15px 16px;border-radius:18px;border:1px solid rgba(249,168,37,.18);background:linear-gradient(135deg,rgba(249,168,37,.08),rgba(25,118,210,.05))}
 .loyalty-top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px}
-.loyalty-kicker{font-size:10px;letter-spacing:1.6px;text-transform:uppercase;color:#ffe6a8}
+.loyalty-kicker{font-size:10px;letter-spacing:1.6px;text-transform:uppercase;color:#8a6200}
 .loyalty-title{font-size:18px;color:var(--text);line-height:1.1}
 .loyalty-meta{font-size:11px;color:var(--text2);margin-top:4px}
-.loyalty-badge{padding:8px 12px;border-radius:999px;border:1px solid rgba(255,255,255,.12);background:rgba(4,9,14,.25);font-size:10px;font-weight:900}
+.loyalty-badge{padding:8px 12px;border-radius:999px;border:1px solid rgba(0,0,0,.1);background:rgba(255,255,255,.6);font-size:10px;font-weight:900}
 .loyalty-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin-top:12px}
-.loyalty-stat{padding:10px;border-radius:14px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06)}
+.loyalty-stat{padding:10px;border-radius:14px;background:rgba(0,0,0,.03);border:1px solid rgba(0,0,0,.07)}
 .loyalty-stat strong{display:block;font-size:18px;color:var(--text)}
 .loyalty-stat span{font-size:10px;color:var(--muted)}
 .offer-stack{display:grid;gap:8px;margin:0 0 14px}
-.offer-card{padding:12px 14px;border-radius:16px;background:rgba(255,255,255,.04);border:1px solid rgba(61,140,255,.14)}
+.offer-card{padding:12px 14px;border-radius:16px;background:rgba(0,0,0,.02);border:1px solid rgba(25,118,210,.1)}
 .offer-title{font-size:12px;color:var(--text)}
 .offer-sub{font-size:10px;color:var(--text2);margin-top:3px}
-.offer-alert{margin:0 0 14px;padding:12px 14px;border-radius:16px;background:rgba(255,145,64,.08);border:1px solid rgba(255,145,64,.22);font-size:11px;color:#ffe1cf}
+.offer-alert{margin:0 0 14px;padding:12px 14px;border-radius:16px;background:rgba(245,124,0,.06);border:1px solid rgba(245,124,0,.18);font-size:11px;color:#a34500}
 
 /* ─── RESPONSIVE ─── */
 @media(min-width:480px){.pgrid{grid-template-columns:repeat(3,1fr);}}
@@ -2480,6 +2876,665 @@ body::after{
     .success-copy p,.thanks-pill p,.notify-bubble{font-size:10px;}
     .eta-time{font-size:24px;}
 }
+
+/* ══════════════════════════════════════════════════════
+   FIGMA-STYLE MICRO-INTERACTIONS — ESPERANCE H2O 💧
+══════════════════════════════════════════════════════ */
+
+/* ─── Product card — lift 3D + shadow bloom ─── */
+.pcard{
+    transition:transform .32s cubic-bezier(.34,1.56,.64,1),
+               box-shadow .32s ease;
+    will-change:transform;
+}
+.pcard:hover{
+    transform:translateY(-7px) scale(1.02);
+    box-shadow:0 18px 38px rgba(0,168,107,.14), 0 4px 14px rgba(0,0,0,.07);
+    z-index:2;
+}
+.pcard:active{transform:scale(.97);transition:transform .08s ease;}
+
+/* ─── Liquid wave sur l'image au hover ─── */
+.pimg{overflow:hidden;}
+.pimg::after{
+    content:'';position:absolute;bottom:-10px;left:-8%;width:116%;height:28px;
+    background:linear-gradient(90deg,rgba(0,168,107,.16),rgba(0,151,167,.12),rgba(0,168,107,.16));
+    border-radius:50%;transform:scaleX(0);
+    transition:transform .42s cubic-bezier(.34,1.56,.64,1);
+    pointer-events:none;
+}
+.pcard:hover .pimg::after{transform:scaleX(1);}
+
+/* ─── Ripple effect universel ─── */
+.btn,.badd,.ghost-btn,.tab,.ftab,.shop-pill,.promo-chip{
+    position:relative;overflow:hidden;
+}
+.ripple-wave{
+    position:absolute;border-radius:50%;
+    background:rgba(255,255,255,.5);
+    width:60px;height:60px;margin-left:-30px;margin-top:-30px;
+    transform:scale(0);animation:rippleOut .55s linear;
+    pointer-events:none;
+}
+@keyframes rippleOut{
+    to{transform:scale(8);opacity:0}
+}
+
+/* ─── Add to cart button feedback ─── */
+.badd{transition:all .28s cubic-bezier(.34,1.56,.64,1);}
+.badd.is-adding{transform:scale(.95);opacity:.8;}
+.badd.is-added{
+    background:linear-gradient(135deg,#00c87a,#009958)!important;
+    transform:scale(1.04);
+}
+
+/* ─── Flying cart item ─── */
+.cart-fly-dot{
+    position:fixed;width:44px;height:44px;border-radius:50%;
+    background:linear-gradient(135deg,var(--neon),var(--cyan));
+    display:flex;align-items:center;justify-content:center;
+    font-size:20px;z-index:9999;pointer-events:none;
+    box-shadow:0 6px 22px rgba(0,168,107,.38);
+}
+
+/* ─── Cart icon spring bounce ─── */
+@keyframes cartSpring{
+    0%  {transform:scale(1) rotate(0)}
+    20% {transform:scale(1.4) rotate(-14deg)}
+    45% {transform:scale(.88) rotate(8deg)}
+    65% {transform:scale(1.15) rotate(-4deg)}
+    82% {transform:scale(.97) rotate(1deg)}
+    100%{transform:scale(1) rotate(0)}
+}
+.cart-bounce{animation:cartSpring .55s cubic-bezier(.36,.07,.19,.97) forwards;}
+
+/* ─── Badge count pop ─── */
+@keyframes badgePop{
+    0%  {transform:scale(0) rotate(-25deg);opacity:0}
+    55% {transform:scale(1.3) rotate(6deg)}
+    100%{transform:scale(1) rotate(0);opacity:1}
+}
+.ccnt.badge-pop{animation:badgePop .4s cubic-bezier(.34,1.56,.64,1) forwards;}
+
+/* ─── Stagger reveal produits ─── */
+@keyframes cardReveal{
+    from{opacity:0;transform:translateY(20px) scale(.96)}
+    to  {opacity:1;transform:translateY(0)   scale(1)}
+}
+.pcard.f-reveal{animation:cardReveal .42s cubic-bezier(.34,1.4,.64,1) both;}
+
+/* ─── Scroll reveal général ─── */
+.s-hidden{
+    opacity:0;transform:translateY(22px);
+    transition:opacity .44s ease, transform .44s cubic-bezier(.34,1.28,.64,1);
+}
+.s-visible{opacity:1;transform:translateY(0);}
+
+/* ─── Tab slide ─── */
+@keyframes panelFadeSlide{
+    from{opacity:0;transform:translateX(14px)}
+    to  {opacity:1;transform:translateX(0)}
+}
+.panel.show{animation:panelFadeSlide .3s cubic-bezier(.23,1,.32,1);}
+
+/* ─── Toast spring ─── */
+@keyframes toastSpring{
+    0%  {opacity:0;transform:translateY(30px) scale(.86)}
+    60% {transform:translateY(-4px) scale(1.03)}
+    100%{opacity:1;transform:translateY(0) scale(1)}
+}
+.toast{animation:toastSpring .44s cubic-bezier(.34,1.56,.64,1);}
+
+/* ─── Quantity btn pop ─── */
+@keyframes qPop{
+    0%  {transform:scale(1)}
+    40% {transform:scale(1.35)}
+    100%{transform:scale(1)}
+}
+.qbtn.q-pop{animation:qPop .28s cubic-bezier(.34,1.56,.64,1);}
+
+/* ─── Stat counter reveal ─── */
+@keyframes statReveal{
+    0%  {transform:scale(.6);opacity:0}
+    65% {transform:scale(1.2)}
+    100%{transform:scale(1);opacity:1}
+}
+.stat-val.s-pop{animation:statReveal .52s cubic-bezier(.34,1.56,.64,1) forwards;}
+
+/* ─── Order card hover border glow ─── */
+.order-card{transition:border-color .25s ease, box-shadow .25s ease;}
+.order-card:hover{
+    border-color:rgba(0,168,107,.28);
+    box-shadow:0 6px 22px rgba(0,168,107,.1);
+}
+
+/* ─── Panel slide-in lateral (notif) spring ─── */
+.notif-panel{transition:transform .4s cubic-bezier(.34,1.2,.64,1);}
+
+/* ─── Price highlight pulse on hover ─── */
+@keyframes priceGlow{
+    0%,100%{color:var(--neon)}
+    50%{color:var(--cyan)}
+}
+.pcard:hover .pprice{animation:priceGlow 1.4s ease infinite;}
+
+/* ─── Floating cart bounce on open/close ─── */
+@keyframes cfloatBounce{
+    0%  {transform:scale(.88);opacity:.6}
+    65% {transform:scale(1.04)}
+    100%{transform:scale(1);opacity:1}
+}
+.cfloat.f-bounce{animation:cfloatBounce .38s cubic-bezier(.34,1.56,.64,1);}
+
+/* ─── Section titles fade up on scroll ─── */
+.oc-section-title, .chtitle, .stat-lbl{
+    transition:color .2s ease;
+}
+
+/* ══════════════════════════════════════════════════════
+   ANDROID NATIVE BOTTOM NAVIGATION BAR
+══════════════════════════════════════════════════════ */
+.tabs{display:none!important;}
+
+.android-nav{
+    position:fixed;bottom:0;left:0;right:0;z-index:890;
+    background:#fff;
+    border-top:1px solid rgba(0,0,0,.08);
+    box-shadow:0 -4px 24px rgba(0,0,0,.09);
+    display:flex;align-items:stretch;
+    height:62px;
+    padding-bottom:env(safe-area-inset-bottom,0px);
+    overflow-x:auto;overflow-y:hidden;
+    -webkit-overflow-scrolling:touch;
+    scrollbar-width:none;
+}
+.android-nav::-webkit-scrollbar{display:none;}
+
+.nav-item{
+    flex:1;min-width:56px;
+    display:flex;flex-direction:column;
+    align-items:center;justify-content:center;
+    gap:3px;padding:6px 2px 8px;
+    border:none;background:transparent;
+    cursor:pointer;position:relative;
+    -webkit-tap-highlight-color:transparent;
+    transition:none;
+}
+
+/* ── Indicator pill (Material 3) ── */
+.nav-item::before{
+    content:'';position:absolute;
+    top:6px;left:50%;
+    transform:translateX(-50%) scaleX(0);
+    width:52px;height:28px;
+    background:rgba(0,168,107,.12);
+    border-radius:14px;
+    transition:transform .3s cubic-bezier(.34,1.4,.64,1),
+               background .2s ease;
+}
+.nav-item.active::before{transform:translateX(-50%) scaleX(1);}
+
+/* ── Icon ── */
+.nav-item .ni{
+    font-size:19px;color:var(--muted);
+    position:relative;z-index:1;
+    transition:color .22s ease,
+               transform .32s cubic-bezier(.34,1.56,.64,1);
+}
+.nav-item.active .ni{
+    color:var(--neon);
+    transform:translateY(-2px) scale(1.12);
+}
+
+/* ── Label ── */
+.nav-item .nl{
+    font-family:var(--fh);font-size:8.5px;font-weight:900;
+    color:var(--muted);letter-spacing:.3px;
+    white-space:nowrap;position:relative;z-index:1;
+    transition:color .22s ease;
+}
+.nav-item.active .nl{color:var(--neon);}
+
+/* ── Badge ── */
+.nav-badge{
+    position:absolute;top:4px;
+    left:calc(50% + 6px);
+    min-width:15px;height:15px;
+    background:var(--red);color:#fff;
+    font-size:8px;font-weight:900;font-family:var(--fh);
+    border-radius:8px;padding:0 4px;
+    display:flex;align-items:center;justify-content:center;
+    border:1.5px solid #fff;
+    animation:badgePop .38s cubic-bezier(.34,1.56,.64,1) forwards;
+}
+.nav-badge.hidden{display:none;}
+
+/* ── Ripple on nav items ── */
+.nav-item{overflow:hidden;}
+
+/* ── Ajuster les panels pour la nav bar ── */
+.wrap{padding-bottom:130px!important;}
+.cfloat{bottom:76px!important;}
+@media(min-width:768px){
+    .cfloat{bottom:80px!important;right:20px!important;}
+}
+
+/* ══════════════════════════════════════════════════════
+   PANELS — CONFIDENTIALITÉ · À PROPOS · DROITS D'AUTEUR
+══════════════════════════════════════════════════════ */
+
+/* ── Info panel chrome ── */
+.info-panel-hero{
+    padding:28px 16px 20px;
+    background:linear-gradient(135deg,rgba(0,168,107,.06),rgba(25,118,210,.04));
+    border-radius:0 0 28px 28px;
+    border-bottom:1px solid var(--bord);
+    margin-bottom:16px;
+    text-align:center;
+}
+.info-panel-icon{
+    width:64px;height:64px;border-radius:20px;
+    background:linear-gradient(135deg,var(--neon),var(--cyan));
+    display:flex;align-items:center;justify-content:center;
+    font-size:26px;color:#fff;margin:0 auto 12px;
+    box-shadow:var(--glow);
+}
+.info-panel-title{
+    font-family:var(--fh);font-size:20px;font-weight:900;
+    color:var(--text);margin-bottom:5px;
+}
+.info-panel-sub{
+    font-family:var(--fh);font-size:11px;font-weight:700;
+    color:var(--muted);
+}
+
+/* ── Settings-style rows ── */
+.info-section{
+    margin-bottom:14px;
+}
+.info-section-title{
+    font-family:var(--fh);font-size:9px;font-weight:900;
+    color:var(--muted);text-transform:uppercase;letter-spacing:1.5px;
+    padding:0 16px 6px;
+}
+.info-row{
+    display:flex;align-items:center;gap:13px;
+    padding:13px 16px;
+    background:#fff;
+    border-bottom:1px solid rgba(0,0,0,.05);
+    cursor:pointer;transition:background .15s ease;
+    -webkit-tap-highlight-color:transparent;
+}
+.info-row:first-of-type{border-radius:12px 12px 0 0;}
+.info-row:last-of-type{border-radius:0 0 12px 12px;border-bottom:none;}
+.info-row:only-of-type{border-radius:12px;border-bottom:none;}
+.info-row:active{background:rgba(0,168,107,.04);}
+.info-row-icon{
+    width:38px;height:38px;border-radius:10px;
+    display:flex;align-items:center;justify-content:center;
+    font-size:16px;flex-shrink:0;
+}
+.info-row-icon.green {background:rgba(0,168,107,.1);color:var(--neon);}
+.info-row-icon.blue  {background:rgba(25,118,210,.1);color:var(--blue);}
+.info-row-icon.red   {background:rgba(229,57,53,.1); color:var(--red);}
+.info-row-icon.gold  {background:rgba(249,168,37,.1);color:var(--gold);}
+.info-row-icon.purple{background:rgba(126,87,194,.1);color:var(--purple);}
+.info-row-icon.cyan  {background:rgba(0,151,167,.1); color:var(--cyan);}
+.info-row-body{flex:1;min-width:0;}
+.info-row-label{
+    font-family:var(--fh);font-size:13px;font-weight:900;
+    color:var(--text);
+}
+.info-row-desc{
+    font-family:var(--fh);font-size:10px;font-weight:700;
+    color:var(--muted);margin-top:2px;line-height:1.4;
+}
+.info-row-arrow{color:var(--muted);font-size:11px;}
+.info-row-value{
+    font-family:var(--fh);font-size:10px;font-weight:900;
+    color:var(--neon);
+}
+
+/* ── Expandable text block ── */
+.info-expand{
+    background:#fff;border-radius:12px;
+    border:1px solid var(--bord);overflow:hidden;
+    margin-bottom:10px;
+}
+.info-expand-head{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:13px 14px;cursor:pointer;
+    -webkit-tap-highlight-color:transparent;
+}
+.info-expand-head-title{
+    font-family:var(--fh);font-size:12px;font-weight:900;color:var(--text);
+    display:flex;align-items:center;gap:8px;
+}
+.info-expand-chevron{
+    font-size:11px;color:var(--muted);
+    transition:transform .25s ease;
+}
+.info-expand.open .info-expand-chevron{transform:rotate(180deg);}
+.info-expand-body{
+    max-height:0;overflow:hidden;
+    transition:max-height .35s cubic-bezier(.23,1,.32,1);
+}
+.info-expand.open .info-expand-body{max-height:600px;}
+.info-expand-content{
+    padding:4px 14px 14px;
+    font-family:var(--fh);font-size:11px;font-weight:700;
+    color:var(--text2);line-height:1.75;border-top:1px solid var(--bord);
+}
+
+/* ══════════════════════════════════════════════════════
+   HERO ANIMATION BOISSONS
+══════════════════════════════════════════════════════ */
+.drink-hero{
+    position:relative;overflow:hidden;
+    background:linear-gradient(135deg,
+        rgba(0,168,107,.1) 0%,
+        rgba(0,151,167,.08) 40%,
+        rgba(25,118,210,.07) 100%);
+    border-radius:24px;margin:10px 0 16px;
+    border:1px solid rgba(0,168,107,.14);
+    min-height:160px;
+    display:flex;align-items:center;
+    box-shadow:0 8px 28px rgba(0,168,107,.1);
+}
+/* Bulles de fond */
+.hero-bubble{
+    position:absolute;border-radius:50%;
+    background:radial-gradient(circle at 30% 30%,rgba(255,255,255,.7),rgba(0,168,107,.18));
+    animation:bubbleRise var(--dur,4s) ease-in-out var(--del,0s) infinite;
+    opacity:.6;
+}
+@keyframes bubbleRise{
+    0%   {transform:translateY(0) scale(1);opacity:.5}
+    50%  {opacity:.8}
+    100% {transform:translateY(-120px) scale(.5);opacity:0}
+}
+/* Vague de fond */
+.hero-wave{
+    position:absolute;bottom:-2px;left:-5%;width:110%;height:48px;
+    background:linear-gradient(90deg,rgba(0,168,107,.12),rgba(0,151,167,.1),rgba(0,168,107,.12));
+    border-radius:50% 50% 0 0;
+    animation:waveFloat 3.8s ease-in-out infinite;
+}
+.hero-wave.w2{
+    bottom:-4px;animation-delay:.9s;opacity:.6;
+    background:linear-gradient(90deg,rgba(25,118,210,.1),rgba(0,168,107,.08),rgba(25,118,210,.1));
+}
+@keyframes waveFloat{
+    0%,100%{transform:translateX(0) scaleY(1)}
+    50%    {transform:translateX(-14px) scaleY(1.08)}
+}
+/* Contenu texte hero */
+.hero-content{
+    position:relative;z-index:2;padding:18px 16px;flex:1;
+}
+.hero-kicker{
+    font-family:var(--fh);font-size:10px;font-weight:900;
+    letter-spacing:1.8px;text-transform:uppercase;
+    color:var(--neon);margin-bottom:5px;
+    animation:fadeUp .5s ease both;
+}
+.hero-title{
+    font-family:var(--fh);font-size:22px;font-weight:900;
+    color:var(--text);line-height:1.15;margin-bottom:7px;
+    animation:fadeUp .5s .08s ease both;
+}
+.hero-title span{color:var(--neon);}
+.hero-sub{
+    font-family:var(--fh);font-size:11px;font-weight:700;
+    color:var(--text2);margin-bottom:12px;
+    animation:fadeUp .5s .16s ease both;
+}
+.hero-cta{
+    display:inline-flex;align-items:center;gap:7px;
+    padding:9px 16px;border-radius:20px;
+    background:linear-gradient(135deg,var(--neon),var(--cyan));
+    color:#fff;font-family:var(--fh);font-size:11px;font-weight:900;
+    letter-spacing:.5px;box-shadow:var(--glow);border:none;cursor:pointer;
+    animation:fadeUp .5s .24s ease both;
+    -webkit-tap-highlight-color:transparent;
+    transition:transform .2s cubic-bezier(.34,1.56,.64,1);
+}
+.hero-cta:active{transform:scale(.95);}
+/* Bouteilles flottantes */
+.hero-bottles{
+    position:relative;z-index:2;
+    display:flex;flex-direction:column;align-items:center;
+    padding-right:14px;gap:6px;flex-shrink:0;
+}
+.hero-showcase{
+    position:relative;z-index:2;
+    display:flex;align-items:center;gap:8px;
+    padding:16px 14px 16px 0;flex-shrink:0;
+}
+.hero-carousel{
+    position:relative;width:152px;overflow:hidden;
+}
+.hero-carousel-track{
+    display:flex;transition:transform .45s cubic-bezier(.22,1,.36,1);
+    touch-action:pan-y;
+}
+.hero-carousel-slide{
+    min-width:100%;display:flex;justify-content:center;
+}
+.hero-photo-stack{
+    position:relative;width:132px;height:146px;
+}
+.hero-photo-card{
+    position:absolute;display:flex;align-items:flex-end;justify-content:flex-start;
+    overflow:hidden;border-radius:20px;background:#fff;border:1px solid rgba(255,255,255,.65);
+    box-shadow:0 14px 34px rgba(0,40,30,.18),0 0 0 1px rgba(0,168,107,.08);
+    animation:heroCardFloat var(--adur,4.2s) ease-in-out var(--adel,0s) infinite;
+    transform-origin:center;
+}
+.hero-photo-card img{
+    width:100%;height:100%;object-fit:cover;display:block;
+    transform:scale(1.05);
+}
+.hero-photo-card::after{
+    content:'';position:absolute;inset:auto 0 0 0;height:55%;
+    background:linear-gradient(180deg,rgba(0,0,0,0),rgba(0,0,0,.46));
+}
+.hero-photo-card.is-main{width:82px;height:126px;right:18px;top:10px;z-index:3;}
+.hero-photo-card.is-left{width:62px;height:96px;left:0;top:36px;z-index:2;transform:rotate(-9deg);}
+.hero-photo-card.is-right{width:58px;height:86px;right:0;bottom:2px;z-index:1;transform:rotate(8deg);}
+.hero-photo-meta{
+    position:absolute;left:10px;right:10px;bottom:10px;z-index:2;
+    font-family:var(--fh);color:#fff;
+}
+.hero-photo-name{
+    font-size:10px;font-weight:900;line-height:1.2;
+    text-shadow:0 2px 7px rgba(0,0,0,.25);
+}
+.hero-photo-price{
+    font-size:9px;font-weight:700;opacity:.92;margin-top:3px;
+}
+.hero-orbit{
+    position:absolute;width:30px;height:30px;border-radius:50%;
+    display:flex;align-items:center;justify-content:center;
+    background:rgba(255,255,255,.7);backdrop-filter:blur(8px);
+    box-shadow:0 6px 18px rgba(0,0,0,.08);
+    color:var(--neon);font-size:14px;font-weight:900;
+    animation:orbitPulse 2.8s ease-in-out infinite;
+}
+.hero-orbit.orbit-top{top:-2px;left:20px;}
+.hero-orbit.orbit-bottom{right:4px;bottom:-6px;animation-delay:.8s;}
+.hero-carousel-dots{
+    display:flex;justify-content:center;gap:6px;margin-top:10px;
+}
+.hero-carousel-dot{
+    width:8px;height:8px;border-radius:50%;border:none;
+    background:rgba(26,46,58,.18);padding:0;cursor:pointer;
+}
+.hero-carousel-dot.active{background:var(--neon);box-shadow:0 0 0 4px rgba(0,168,107,.12);}
+@keyframes heroCardFloat{
+    0%,100%{transform:translateY(0) rotate(var(--rot,0deg))}
+    50%{transform:translateY(-8px) rotate(calc(var(--rot,0deg) + 2deg))}
+}
+@keyframes orbitPulse{
+    0%,100%{transform:scale(1);box-shadow:0 6px 18px rgba(0,0,0,.08)}
+    50%{transform:scale(1.08);box-shadow:0 10px 24px rgba(0,168,107,.18)}
+}
+.hero-bottle{
+    font-size:36px;line-height:1;
+    animation:bottleFloat var(--bdur,3.2s) ease-in-out var(--bdel,0s) infinite;
+    filter:drop-shadow(0 4px 10px rgba(0,168,107,.25));
+}
+@keyframes bottleFloat{
+    0%,100%{transform:translateY(0) rotate(0deg)}
+    33%    {transform:translateY(-8px) rotate(3deg)}
+    66%    {transform:translateY(-4px) rotate(-2deg)}
+}
+/* Gouttes d'eau */
+.hero-drop{
+    position:absolute;font-size:14px;
+    animation:dropFall var(--ddur,2.4s) ease-in var(--ddel,0s) infinite;
+    opacity:.6;
+}
+@keyframes dropFall{
+    0%  {transform:translateY(-10px) scale(.8);opacity:.7}
+    100%{transform:translateY(180px) scale(.4);opacity:0}
+}
+
+/* ══════════════════════════════════════════════════════
+   PANELS CONTACT & LIVRAISON
+══════════════════════════════════════════════════════ */
+.whatsapp-btn{
+    display:flex;align-items:center;justify-content:center;gap:10px;
+    padding:16px;border-radius:16px;
+    background:linear-gradient(135deg,#25d366,#128c7e);
+    color:#fff;font-family:var(--fh);font-size:15px;font-weight:900;
+    letter-spacing:.5px;text-decoration:none;border:none;cursor:pointer;
+    box-shadow:0 8px 24px rgba(37,211,102,.3);
+    transition:transform .25s cubic-bezier(.34,1.56,.64,1);
+    -webkit-tap-highlight-color:transparent;
+}
+.whatsapp-btn:active{transform:scale(.97);}
+.whatsapp-btn i{font-size:22px;}
+
+.call-btn{
+    display:flex;align-items:center;justify-content:center;gap:10px;
+    padding:14px;border-radius:16px;
+    background:rgba(25,118,210,.08);border:1.5px solid rgba(25,118,210,.22);
+    color:var(--blue);font-family:var(--fh);font-size:14px;font-weight:900;
+    text-decoration:none;
+    transition:all .2s ease;
+    -webkit-tap-highlight-color:transparent;
+}
+.call-btn:active{background:var(--blue);color:#fff;}
+
+.zone-map{
+    border-radius:16px;overflow:hidden;
+    border:1px solid var(--bord);
+    background:linear-gradient(135deg,rgba(25,118,210,.06),rgba(0,168,107,.04));
+    padding:16px;margin-bottom:12px;
+    position:relative;
+}
+.zone-item{
+    display:flex;align-items:center;gap:10px;
+    padding:10px 0;border-bottom:1px solid rgba(0,0,0,.05);
+}
+.zone-item:last-child{border-bottom:none;}
+.zone-dot{
+    width:10px;height:10px;border-radius:50%;flex-shrink:0;
+}
+.zone-dot.ok  {background:var(--neon);box-shadow:0 0 6px rgba(0,168,107,.5);}
+.zone-dot.mid {background:var(--gold);box-shadow:0 0 6px rgba(249,168,37,.5);}
+.zone-dot.far {background:var(--red); box-shadow:0 0 6px rgba(229,57,53,.5);}
+.zone-name{font-family:var(--fh);font-size:12px;font-weight:900;color:var(--text);flex:1;}
+.zone-delay{font-family:var(--fh);font-size:10px;font-weight:700;color:var(--muted);}
+.zone-price{font-family:var(--fh);font-size:11px;font-weight:900;color:var(--neon);}
+
+/* ── Export & Delete dans privacy ── */
+.export-btn{
+    display:flex;align-items:center;gap:10px;
+    padding:14px 16px;border-radius:14px;
+    background:linear-gradient(135deg,rgba(0,168,107,.08),rgba(0,151,167,.06));
+    border:1.5px solid rgba(0,168,107,.2);
+    font-family:var(--fh);font-size:13px;font-weight:900;color:var(--neon);
+    cursor:pointer;width:100%;text-align:left;margin-bottom:10px;
+    transition:all .22s cubic-bezier(.34,1.56,.64,1);
+    -webkit-tap-highlight-color:transparent;
+}
+.export-btn:active{transform:scale(.98);}
+.export-btn i{font-size:18px;}
+.export-list{
+    display:flex;flex-direction:column;gap:10px;
+}
+.delete-request-btn{
+    display:flex;align-items:center;gap:10px;
+    padding:14px 16px;border-radius:14px;
+    background:rgba(229,57,53,.06);border:1.5px solid rgba(229,57,53,.2);
+    font-family:var(--fh);font-size:13px;font-weight:900;color:var(--red);
+    cursor:pointer;width:100%;text-align:left;
+    transition:all .22s ease;
+    -webkit-tap-highlight-color:transparent;
+}
+.delete-request-btn:active{background:rgba(229,57,53,.12);}
+.delete-confirm-zone{
+    display:none;margin-top:12px;padding:16px;
+    border-radius:14px;background:rgba(229,57,53,.04);
+    border:1px solid rgba(229,57,53,.18);
+}
+.delete-confirm-zone.show{display:block;}
+.privacy-note{
+    margin-top:10px;padding:12px 14px;border-radius:14px;
+    background:linear-gradient(135deg,rgba(25,118,210,.05),rgba(0,168,107,.05));
+    border:1px solid rgba(25,118,210,.12);
+    font-family:var(--fh);font-size:11px;font-weight:700;color:var(--text2);line-height:1.7;
+}
+.request-status-badge{
+    display:flex;align-items:center;gap:9px;margin:10px 0 0;
+    padding:12px 14px;border-radius:14px;
+    background:rgba(249,168,37,.08);border:1px solid rgba(249,168,37,.22);
+    font-family:var(--fh);font-size:11px;font-weight:800;color:#8a5a00;
+}
+.request-status-badge i{font-size:16px;color:var(--gold);}
+.more-grid{
+    display:grid;grid-template-columns:1fr 1fr;gap:10px;
+}
+.more-link{
+    display:flex;align-items:center;gap:10px;
+    padding:14px;border-radius:16px;text-decoration:none;cursor:pointer;
+    background:#fff;border:1px solid var(--bord);color:var(--text);
+    box-shadow:0 10px 24px rgba(15,23,42,.05);
+}
+.more-link i{
+    width:34px;height:34px;border-radius:12px;display:flex;align-items:center;justify-content:center;
+    background:rgba(0,168,107,.08);color:var(--neon);
+}
+.wa-actions{
+    display:flex;flex-wrap:wrap;gap:7px;margin-top:10px;
+}
+.wa-pill{
+    display:inline-flex;align-items:center;gap:6px;
+    padding:8px 10px;border-radius:999px;text-decoration:none;
+    background:rgba(37,211,102,.1);border:1px solid rgba(37,211,102,.24);
+    color:#14895a;font-family:var(--fh);font-size:10px;font-weight:900;
+}
+.wa-pill i{font-size:12px;}
+
+/* ── Version chip ── */
+.version-chip{
+    display:inline-flex;align-items:center;gap:7px;
+    padding:8px 14px;border-radius:20px;
+    background:rgba(0,168,107,.07);border:1px solid rgba(0,168,107,.18);
+    font-family:var(--fh);font-size:11px;font-weight:900;color:var(--neon);
+    margin:0 auto;
+}
+
+/* ── Copyright footer inside panel ── */
+.copyright-footer{
+    text-align:center;padding:20px;
+    font-family:var(--fh);font-size:10px;font-weight:700;
+    color:var(--muted);line-height:1.8;
+}
+.copyright-footer strong{color:var(--text);}
+.copyright-footer a{color:var(--neon);text-decoration:none;}
 </style>
 </head>
 <body>
@@ -2638,12 +3693,79 @@ body::after{
 <?php endif; ?>
 
 <?php if($client_id): ?>
+
+<!-- ── HERO ANIMÉ BOISSONS ── -->
+<div class="drink-hero" id="drink-hero">
+  <!-- Bulles de fond -->
+  <div class="hero-bubble" style="width:18px;height:18px;bottom:14%;left:8%;--dur:3.8s;--del:0s"></div>
+  <div class="hero-bubble" style="width:10px;height:10px;bottom:20%;left:22%;--dur:4.6s;--del:.8s"></div>
+  <div class="hero-bubble" style="width:14px;height:14px;bottom:8%;left:38%;--dur:3.2s;--del:1.4s"></div>
+  <div class="hero-bubble" style="width:8px;height:8px;bottom:30%;left:52%;--dur:5s;--del:.3s"></div>
+  <div class="hero-bubble" style="width:12px;height:12px;bottom:12%;left:65%;--dur:4.1s;--del:1.1s"></div>
+  <!-- Gouttes flottantes -->
+  <span class="hero-drop" style="left:18%;top:10%;--ddur:2.6s;--ddel:.5s">💧</span>
+  <span class="hero-drop" style="left:44%;top:5%;--ddur:3.1s;--ddel:1.2s">💧</span>
+  <span class="hero-drop" style="left:70%;top:12%;--ddur:2.2s;--ddel:.2s">💧</span>
+  <!-- Vagues -->
+  <div class="hero-wave"></div>
+  <div class="hero-wave w2"></div>
+  <!-- Contenu -->
+  <div class="hero-content">
+    <div class="hero-kicker"><i class="fas fa-tint"></i> Grand Master Delivery</div>
+    <div class="hero-title">Boissons<br><span>fraîches</span> livrées<br>chez vous</div>
+    <div class="hero-sub">Eau · Jus · Sodas · Pack famille</div>
+    <button class="hero-cta" onclick="document.getElementById('shop-search').focus()">
+      <i class="fas fa-search"></i> Commander maintenant
+    </button>
+  </div>
+  <?php if(!empty($heroProducts)): ?>
+  <div class="hero-showcase" aria-hidden="true">
+    <div class="hero-carousel" id="hero-carousel">
+      <div class="hero-carousel-track" id="hero-carousel-track">
+        <?php foreach($heroProducts as $heroIndex => $heroProduct): ?>
+        <div class="hero-carousel-slide">
+          <div class="hero-photo-stack">
+            <div class="hero-photo-card is-main" style="--adur:3.6s;--adel:0s;--rot:0deg">
+              <img src="<?= htmlspecialchars((string)$heroProduct['image_url']) ?>" alt="<?= htmlspecialchars((string)$heroProduct['name']) ?>">
+              <div class="hero-photo-meta">
+                <div class="hero-photo-name"><?= htmlspecialchars((string)$heroProduct['name']) ?></div>
+                <div class="hero-photo-price"><?= number_format((float)($heroProduct['promo']['promo_price'] ?? $heroProduct['price']),0,'','.') ?> CFA</div>
+              </div>
+            </div>
+            <div class="hero-photo-card is-left" style="--adur:4.1s;--adel:.15s;--rot:-9deg">
+              <img src="<?= htmlspecialchars((string)$heroProduct['image_url']) ?>" alt="<?= htmlspecialchars((string)$heroProduct['name']) ?>">
+            </div>
+            <div class="hero-photo-card is-right" style="--adur:4.4s;--adel:.25s;--rot:8deg">
+              <img src="<?= htmlspecialchars((string)$heroProduct['image_url']) ?>" alt="<?= htmlspecialchars((string)$heroProduct['name']) ?>">
+            </div>
+            <div class="hero-orbit orbit-top">💧</div>
+            <div class="hero-orbit orbit-bottom">❄️</div>
+          </div>
+        </div>
+        <?php endforeach; ?>
+      </div>
+      <div class="hero-carousel-dots" id="hero-carousel-dots">
+        <?php foreach($heroProducts as $heroIndex => $heroProduct): ?>
+        <button type="button" class="hero-carousel-dot <?= $heroIndex === 0 ? 'active' : '' ?>" data-hero-dot="<?= $heroIndex ?>" aria-label="Slide <?= $heroIndex + 1 ?>"></button>
+        <?php endforeach; ?>
+      </div>
+    </div>
+  </div>
+  <?php else: ?>
+  <div class="hero-bottles">
+    <div class="hero-bottle" style="--bdur:3.2s;--bdel:0s">🧴</div>
+    <div class="hero-bottle" style="--bdur:4.1s;--bdel:.6s">🧃</div>
+    <div class="hero-bottle" style="--bdur:3.6s;--bdel:1.1s">🥤</div>
+  </div>
+  <?php endif; ?>
+</div>
+
 <div class="loyalty-card">
   <div class="loyalty-top">
     <div>
       <div class="loyalty-kicker">Programme fidélité</div>
       <div class="loyalty-title">Statut <?= htmlspecialchars($loyaltyTier['label']) ?></div>
-      <div class="loyalty-meta">Plus vous commandez, plus vos offres deviennent personnalisées.</div>
+      <div class="loyalty-meta">Cumulez des points et profitez d'un service prioritaire sur vos commandes.</div>
     </div>
     <div class="loyalty-badge" style="color:<?= htmlspecialchars($loyaltyTier['color']) ?>">VIP <?= htmlspecialchars($loyaltyTier['label']) ?></div>
   </div>
@@ -2664,19 +3786,7 @@ body::after{
 </div>
 <?php endif; ?>
 
-<?php if(!empty($personalizedOffers)): ?>
-<div style="margin:10px 0 12px;font-family:var(--fh);font-size:13px;font-weight:900;color:var(--text);display:flex;align-items:center;justify-content:space-between">
-  <span><i class="fas fa-wand-magic-sparkles" style="color:var(--cyan)"></i> Offres personnalisées</span>
-</div>
-<div class="offer-stack">
-  <?php foreach($personalizedOffers as $offer): ?>
-  <div class="offer-card">
-    <div class="offer-title"><?= htmlspecialchars($offer['title']) ?></div>
-    <div class="offer-sub"><?= htmlspecialchars($offer['subtitle']) ?></div>
-  </div>
-  <?php endforeach; ?>
-</div>
-<?php endif; ?>
+<!-- Offres personnalisées supprimées du dashboard -->
 
 <div class="shop-tools">
   <input type="search" id="shop-search" class="shop-search" placeholder="Rechercher un produit, une catégorie, une offre…" oninput="applyShopFilters()">
@@ -2905,6 +4015,392 @@ body::after{
       </div>
       <?php endfor; ?>
     </div>
+  </div>
+</div>
+</div>
+
+<!-- ══════════ PANEL: CONFIDENTIALITÉ ══════════ -->
+<div class="panel" id="panel-privacy">
+<div class="wrap">
+  <div class="info-panel-hero">
+    <div class="info-panel-icon"><i class="fas fa-shield-alt"></i></div>
+    <div class="info-panel-title">Confidentialité</div>
+    <div class="info-panel-sub">Vos données sont protégées et sécurisées</div>
+  </div>
+
+  <div class="info-section">
+    <div class="info-section-title">Vos droits</div>
+    <div class="info-expand" onclick="toggleExpand(this)">
+      <div class="info-expand-head">
+        <div class="info-expand-head-title"><i class="fas fa-user-shield" style="color:var(--neon)"></i> Données personnelles</div>
+        <i class="fas fa-chevron-down info-expand-chevron"></i>
+      </div>
+      <div class="info-expand-body">
+        <div class="info-expand-content">Nous collectons uniquement les informations nécessaires à la gestion de vos commandes : nom, téléphone, adresse de livraison. Ces données ne sont jamais vendues ni partagées avec des tiers sans votre consentement explicite.</div>
+      </div>
+    </div>
+    <div class="info-expand" onclick="toggleExpand(this)">
+      <div class="info-expand-head">
+        <div class="info-expand-head-title"><i class="fas fa-database" style="color:var(--blue)"></i> Stockage des données</div>
+        <i class="fas fa-chevron-down info-expand-chevron"></i>
+      </div>
+      <div class="info-expand-body">
+        <div class="info-expand-content">Vos données sont stockées sur des serveurs sécurisés situés localement. L'accès est restreint au personnel autorisé d'Espérance H2O. Les données de commandes sont conservées pendant 3 ans conformément à la réglementation.</div>
+      </div>
+    </div>
+    <div class="info-expand" onclick="toggleExpand(this)">
+      <div class="info-expand-head">
+        <div class="info-expand-head-title"><i class="fas fa-cookie-bite" style="color:var(--gold)"></i> Cookies & Sessions</div>
+        <i class="fas fa-chevron-down info-expand-chevron"></i>
+      </div>
+      <div class="info-expand-body">
+        <div class="info-expand-content">Cette application utilise des sessions PHP sécurisées pour maintenir votre connexion. Aucun cookie de tracking ou de publicité n'est utilisé. Les sessions expirent automatiquement après inactivité.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="info-section">
+    <div class="info-section-title">Vos données</div>
+    <div class="export-list">
+      <button class="export-btn" onclick="downloadClientExport('json')">
+        <i class="fas fa-file-code"></i>
+        <div>
+          <div style="font-size:13px">Exporter en JSON</div>
+          <div style="font-size:10px;font-weight:700;color:var(--muted);margin-top:2px">Format technique complet</div>
+        </div>
+        <i class="fas fa-chevron-right" style="margin-left:auto;font-size:11px;color:var(--muted)"></i>
+      </button>
+      <button class="export-btn" onclick="downloadClientExport('csv')">
+        <i class="fas fa-file-csv"></i>
+        <div>
+          <div style="font-size:13px">Exporter en CSV</div>
+          <div style="font-size:10px;font-weight:700;color:var(--muted);margin-top:2px">Ouverture Excel / tableur</div>
+        </div>
+        <i class="fas fa-chevron-right" style="margin-left:auto;font-size:11px;color:var(--muted)"></i>
+      </button>
+      <button class="export-btn" onclick="downloadClientExport('pdf')">
+        <i class="fas fa-file-pdf"></i>
+        <div>
+          <div style="font-size:13px">Exporter en PDF</div>
+          <div style="font-size:10px;font-weight:700;color:var(--muted);margin-top:2px">Résumé imprimable</div>
+        </div>
+        <i class="fas fa-chevron-right" style="margin-left:auto;font-size:11px;color:var(--muted)"></i>
+      </button>
+    </div>
+
+    <?php if($pendingDeletionRequest): ?>
+    <div class="request-status-badge">
+      <i class="fas fa-hourglass-half"></i>
+      <div>
+        <div>Demande de suppression déjà envoyée</div>
+        <div style="font-size:10px;font-weight:700;opacity:.85;margin-top:2px">En attente depuis le <?= htmlspecialchars(date('d/m/Y H:i', strtotime((string)$pendingDeletionRequest['requested_at']))) ?></div>
+      </div>
+    </div>
+    <?php endif; ?>
+
+    <?php if(!$pendingDeletionRequest): ?>
+    <button class="delete-request-btn" onclick="document.getElementById('delete-confirm-zone').classList.toggle('show')">
+      <i class="fas fa-user-times"></i>
+      <div>
+        <div style="font-size:13px">Demander la suppression</div>
+        <div style="font-size:10px;font-weight:700;color:var(--muted);margin-top:2px">Envoie une demande à l'administrateur</div>
+      </div>
+    </button>
+    <div class="delete-confirm-zone" id="delete-confirm-zone">
+      <div style="font-family:var(--fh);font-size:12px;font-weight:700;color:var(--text);margin-bottom:12px;line-height:1.6">
+        ⚠️ Cette demande sera transmise à l'administrateur. Votre compte sera supprimé sous 72h après vérification.
+      </div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-r btn-full" onclick="requestDeleteAccount()"><i class="fas fa-check"></i> Confirmer la demande</button>
+        <button class="btn btn-n" onclick="document.getElementById('delete-confirm-zone').classList.remove('show')"><i class="fas fa-times"></i></button>
+      </div>
+    </div>
+    <?php endif; ?>
+    <div class="privacy-note">
+      L'export crée maintenant de vrais fichiers JSON, CSV et PDF avec votre profil, vos commandes, vos notifications, vos favoris et vos avis. La suppression envoie une demande formelle à l'administration.
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ══════════ PANEL: CONTACT & WHATSAPP ══════════ -->
+<div class="panel" id="panel-contact">
+<div class="wrap">
+  <div class="info-panel-hero">
+    <div class="info-panel-icon" style="background:linear-gradient(135deg,#25d366,#128c7e)"><i class="fab fa-whatsapp"></i></div>
+    <div class="info-panel-title">Nous contacter</div>
+    <div class="info-panel-sub">Support client · Commandes · Réclamations</div>
+  </div>
+
+  <div class="info-section">
+    <div class="info-section-title">Contact direct</div>
+    <a class="whatsapp-btn" href="https://wa.me/2250707003136?text=Bonjour%20Espérance%20H2O%2C%20j'ai%20une%20question%20concernant%20ma%20commande." target="_blank" rel="noopener">
+      <i class="fab fa-whatsapp"></i>
+      <div style="text-align:left">
+        <div>WhatsApp — Espérance H2O</div>
+        <div style="font-size:11px;font-weight:700;opacity:.9;margin-top:2px">+225 07 07 00 31 36</div>
+      </div>
+      <i class="fas fa-external-link-alt" style="margin-left:auto;font-size:12px;opacity:.8"></i>
+    </a>
+    <div style="margin-top:10px">
+      <a class="call-btn" href="tel:+2250707003136">
+        <i class="fas fa-phone-alt"></i>
+        <div style="text-align:left">
+          <div>Appeler directement</div>
+          <div style="font-size:10px;font-weight:700;opacity:.75;margin-top:2px">+225 07 07 00 31 36</div>
+        </div>
+      </a>
+    </div>
+  </div>
+
+  <div class="info-section">
+    <div class="info-section-title">Horaires du support</div>
+    <div style="border-radius:12px;overflow:hidden;border:1px solid var(--bord)">
+      <div class="info-row">
+        <div class="info-row-icon green"><i class="fas fa-clock"></i></div>
+        <div class="info-row-body">
+          <div class="info-row-label">Lun — Ven</div>
+          <div class="info-row-desc">7h00 — 19h00</div>
+        </div>
+        <div class="info-row-value" style="color:var(--neon)">Ouvert</div>
+      </div>
+      <div class="info-row">
+        <div class="info-row-icon gold"><i class="fas fa-clock"></i></div>
+        <div class="info-row-body">
+          <div class="info-row-label">Samedi</div>
+          <div class="info-row-desc">8h00 — 17h00</div>
+        </div>
+        <div class="info-row-value" style="color:var(--gold)">Partiel</div>
+      </div>
+      <div class="info-row">
+        <div class="info-row-icon red"><i class="fas fa-moon"></i></div>
+        <div class="info-row-body">
+          <div class="info-row-label">Dimanche</div>
+          <div class="info-row-desc">Fermé · Urgences WhatsApp uniquement</div>
+        </div>
+        <div class="info-row-value" style="color:var(--red)">Fermé</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="info-section">
+    <div class="info-section-title">Que peut-on faire pour vous ?</div>
+    <div style="border-radius:12px;overflow:hidden;border:1px solid var(--bord)">
+      <?php foreach([
+        ['icon'=>'fa-box','cls'=>'blue','l'=>'Suivi de commande','d'=>'Statut et heure de livraison'],
+        ['icon'=>'fa-rotate-left','cls'=>'gold','l'=>'Modification commande','d'=>'Avant départ en livraison'],
+        ['icon'=>'fa-star','cls'=>'purple','l'=>'Réclamation qualité','d'=>'Signaler un problème produit'],
+        ['icon'=>'fa-truck-fast','cls'=>'cyan','l'=>'Livraison urgente','d'=>'Demande express'],
+      ] as $item): ?>
+      <div class="info-row">
+        <div class="info-row-icon <?= $item['cls'] ?>"><i class="fas <?= $item['icon'] ?>"></i></div>
+        <div class="info-row-body">
+          <div class="info-row-label"><?= $item['l'] ?></div>
+          <div class="info-row-desc"><?= $item['d'] ?></div>
+        </div>
+        <i class="fas fa-chevron-right info-row-arrow"></i>
+      </div>
+      <?php endforeach; ?>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ══════════ PANEL: ZONE DE LIVRAISON ══════════ -->
+<div class="panel" id="panel-delivery">
+<div class="wrap">
+  <div class="info-panel-hero">
+    <div class="info-panel-icon" style="background:linear-gradient(135deg,var(--gold),var(--orange))"><i class="fas fa-map-marked-alt"></i></div>
+    <div class="info-panel-title">Zone de livraison</div>
+    <div class="info-panel-sub">Livraison à domicile · 7j/7</div>
+  </div>
+
+  <div class="info-section">
+    <div class="info-section-title">Délais &amp; Tarifs</div>
+    <div class="zone-map">
+      <?php if($deliveryZones): ?>
+      <?php foreach($deliveryZones as $z):
+        $fee = (float)($z['delivery_fee'] ?? 0);
+      ?>
+      <div class="zone-item">
+        <div class="zone-dot <?= deliveryZoneTone($fee) ?>"></div>
+        <div class="zone-name"><?= htmlspecialchars((string)$z['zone_name']) ?></div>
+        <div class="zone-delay"><?= htmlspecialchars((string)$z['delivery_delay_label']) ?></div>
+        <div class="zone-price"><?= $fee <= 0 ? 'Gratuit' : number_format($fee,0,'','.') . ' CFA' ?></div>
+      </div>
+      <?php endforeach; ?>
+      <?php else: ?>
+      <div style="font-family:var(--fh);font-size:11px;font-weight:700;color:var(--muted)">
+        Aucune zone configurée pour cette ville. Contactez-nous sur WhatsApp pour confirmer la livraison.
+      </div>
+      <?php endif; ?>
+    </div>
+  </div>
+
+  <div class="info-section">
+    <div class="info-section-title">Informations importantes</div>
+    <div style="border-radius:12px;overflow:hidden;border:1px solid var(--bord)">
+      <div class="info-row">
+        <div class="info-row-icon green"><i class="fas fa-box-open"></i></div>
+        <div class="info-row-body">
+          <div class="info-row-label">Commande minimum</div>
+          <div class="info-row-desc">Aucun minimum · Toutes commandes acceptées</div>
+        </div>
+      </div>
+      <div class="info-row">
+        <div class="info-row-icon blue"><i class="fas fa-temperature-low"></i></div>
+        <div class="info-row-body">
+          <div class="info-row-label">Boissons fraîches garanties</div>
+          <div class="info-row-desc">Livraison en glacière isotherme</div>
+        </div>
+        <div class="info-row-value" style="color:var(--cyan)">❄️</div>
+      </div>
+      <div class="info-row">
+        <div class="info-row-icon gold"><i class="fas fa-money-bill-wave"></i></div>
+        <div class="info-row-body">
+          <div class="info-row-label">Paiement</div>
+          <div class="info-row-desc">Cash à la livraison · Mobile Money</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="info-section">
+    <a class="whatsapp-btn" href="https://wa.me/2250707003136?text=Bonjour%2C%20je%20voudrais%20vérifier%20si%20vous%20livrez%20dans%20ma%20zone." target="_blank" rel="noopener" style="text-decoration:none">
+      <i class="fab fa-whatsapp"></i> Vérifier ma zone sur WhatsApp
+    </a>
+  </div>
+</div>
+</div>
+
+<!-- ══════════ PANEL: PLUS ══════════ -->
+<div class="panel" id="panel-more">
+<div class="wrap">
+  <div class="info-panel-hero">
+    <div class="info-panel-icon" style="background:linear-gradient(135deg,var(--blue),var(--purple))"><i class="fas fa-ellipsis-h"></i></div>
+    <div class="info-panel-title">Plus</div>
+    <div class="info-panel-sub">Accès rapide aux informations utiles</div>
+  </div>
+
+  <div class="info-section">
+    <div class="info-section-title">Raccourcis</div>
+    <div class="more-grid">
+      <button class="more-link" type="button" onclick="navSwitch('delivery')"><i class="fas fa-truck"></i><span>Zone de livraison</span></button>
+      <button class="more-link" type="button" onclick="navSwitch('contact')"><i class="fab fa-whatsapp"></i><span>Nous contacter</span></button>
+      <button class="more-link" type="button" onclick="navSwitch('privacy')"><i class="fas fa-shield-alt"></i><span>Confidentialité</span></button>
+      <button class="more-link" type="button" onclick="navSwitch('about')"><i class="fas fa-info-circle"></i><span>À propos</span></button>
+      <button class="more-link" type="button" onclick="navSwitch('legal')"><i class="fas fa-copyright"></i><span>Légal</span></button>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ══════════ PANEL: À PROPOS ══════════ -->
+<div class="panel" id="panel-about">
+<div class="wrap">
+  <div class="info-panel-hero">
+    <div class="info-panel-icon" style="background:linear-gradient(135deg,var(--blue),var(--cyan))"><i class="fas fa-tint"></i></div>
+    <div class="info-panel-title">Espérance H2O</div>
+    <div class="info-panel-sub">Distribution de boissons · Mobile First</div>
+    <div style="margin-top:12px;display:flex;justify-content:center">
+      <div class="version-chip"><i class="fas fa-tag"></i> Version 2.0</div>
+    </div>
+  </div>
+  <div class="info-section">
+    <div class="info-section-title">Application</div>
+    <div style="border-radius:12px;overflow:hidden;border:1px solid var(--bord)">
+      <div class="info-row">
+        <div class="info-row-icon purple"><i class="fas fa-code"></i></div>
+        <div class="info-row-body"><div class="info-row-label">Technologie</div><div class="info-row-desc">PHP · Vanilla JS · CSS3 · Mobile-First</div></div>
+      </div>
+      <div class="info-row">
+        <div class="info-row-icon green"><i class="fas fa-shield-alt"></i></div>
+        <div class="info-row-body"><div class="info-row-label">Sécurité</div><div class="info-row-desc">Sessions sécurisées · PDO · XSS protégé</div></div>
+        <div class="info-row-value" style="color:var(--neon)">✓ OK</div>
+      </div>
+      <div class="info-row">
+        <div class="info-row-icon blue"><i class="fas fa-mobile-alt"></i></div>
+        <div class="info-row-body"><div class="info-row-label">Compatible</div><div class="info-row-desc">Android · iOS · PWA Ready</div></div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- ══════════ PANEL: DROITS D'AUTEUR ══════════ -->
+<div class="panel" id="panel-legal">
+<div class="wrap">
+  <div class="info-panel-hero">
+    <div class="info-panel-icon" style="background:linear-gradient(135deg,var(--gold),var(--orange))"><i class="fas fa-copyright"></i></div>
+    <div class="info-panel-title">Droits d'auteur</div>
+    <div class="info-panel-sub">Mentions légales & licences</div>
+  </div>
+
+  <div class="info-section">
+    <div class="info-section-title">Propriété intellectuelle</div>
+    <div class="info-expand open" onclick="toggleExpand(this)">
+      <div class="info-expand-head">
+        <div class="info-expand-head-title"><i class="fas fa-copyright" style="color:var(--gold)"></i> Copyright</div>
+        <i class="fas fa-chevron-down info-expand-chevron"></i>
+      </div>
+      <div class="info-expand-body">
+        <div class="info-expand-content">© <?= date('Y') ?> Espérance H2O. Tous droits réservés. Toute reproduction, distribution ou modification de cette application, en tout ou en partie, sans autorisation écrite préalable est strictement interdite.</div>
+      </div>
+    </div>
+    <div class="info-expand" onclick="toggleExpand(this)">
+      <div class="info-expand-head">
+        <div class="info-expand-head-title"><i class="fas fa-file-contract" style="color:var(--blue)"></i> Conditions d'utilisation</div>
+        <i class="fas fa-chevron-down info-expand-chevron"></i>
+      </div>
+      <div class="info-expand-body">
+        <div class="info-expand-content">L'utilisation de cette application est réservée aux clients enregistrés d'Espérance H2O. Toute utilisation frauduleuse, tentative d'accès non autorisé ou manipulation des données est susceptible de faire l'objet de poursuites judiciaires.</div>
+      </div>
+    </div>
+    <div class="info-expand" onclick="toggleExpand(this)">
+      <div class="info-expand-head">
+        <div class="info-expand-head-title"><i class="fas fa-balance-scale" style="color:var(--purple)"></i> Responsabilité</div>
+        <i class="fas fa-chevron-down info-expand-chevron"></i>
+      </div>
+      <div class="info-expand-body">
+        <div class="info-expand-content">Espérance H2O s'engage à maintenir l'exactitude des informations publiées sur l'application. Cependant, nous ne pouvons garantir l'exactitude ou l'exhaustivité des informations, et déclinons toute responsabilité pour les erreurs ou omissions.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="info-section">
+    <div class="info-section-title">Ressources tierces</div>
+    <div style="border-radius:12px;overflow:hidden;border:1px solid var(--bord)">
+      <div class="info-row">
+        <div class="info-row-icon blue"><i class="fab fa-font-awesome"></i></div>
+        <div class="info-row-body">
+          <div class="info-row-label">Font Awesome 6.5</div>
+          <div class="info-row-desc">Licence Free · fontawesome.com</div>
+        </div>
+        <div class="info-row-value">MIT</div>
+      </div>
+      <div class="info-row">
+        <div class="info-row-icon green"><i class="fas fa-font"></i></div>
+        <div class="info-row-body">
+          <div class="info-row-label">Google Fonts</div>
+          <div class="info-row-desc">Source Serif 4 · fonts.google.com</div>
+        </div>
+        <div class="info-row-value">OFL</div>
+      </div>
+      <div class="info-row">
+        <div class="info-row-icon gold"><i class="fas fa-code"></i></div>
+        <div class="info-row-body">
+          <div class="info-row-label">PHP · MariaDB</div>
+          <div class="info-row-desc">Langages et base de données open-source</div>
+        </div>
+        <div class="info-row-value">GPL</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="copyright-footer">
+    <strong>© <?= date('Y') ?> Espérance H2O</strong><br>
+    Tous droits réservés · Version 2.0<br>
+    Développé avec <i class="fas fa-heart" style="color:var(--red)"></i> pour votre satisfaction
   </div>
 </div>
 </div>
@@ -3199,15 +4695,182 @@ let currentShopSort = 'popular';
 let favoriteIds = new Set(<?= json_encode(array_values($favoriteProductIds), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>);
 let cartSyncTimer = null;
 let appliedCoupon = null;
+const CLIENT_EXPORT_NAME = 'esperance-h2o-client-export';
+const ADMIN_WHATSAPP_NUMBER = '2250707003136';
+const DELIVERY_ZONES = <?= json_encode(array_values(array_map(static function(array $zone): array {
+    return [
+        'id' => (int)$zone['id'],
+        'zone_name' => (string)($zone['zone_name'] ?? ''),
+        'delivery_delay_label' => (string)($zone['delivery_delay_label'] ?? ''),
+        'delivery_fee' => (float)($zone['delivery_fee'] ?? 0),
+        'notes' => (string)($zone['notes'] ?? ''),
+    ];
+}, $deliveryZones)), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
 
-/* ── Tab Switch ── */
-function switchTab(tab){
+/* ── Tab Switch (legacy compat) ── */
+function switchTab(tab){ navSwitch(tab, document.getElementById('nav-'+tab)); }
+
+/* ── Android Nav Switch ── */
+function navSwitch(tab, btn){
+    /* panels */
     document.querySelectorAll('.panel').forEach(p=>p.classList.remove('show'));
-    document.getElementById('panel-'+tab)?.classList.add('show');
+    const panel = document.getElementById('panel-'+tab);
+    if(panel) panel.classList.add('show');
+    /* nav items */
+    document.querySelectorAll('.nav-item').forEach(b=>b.classList.remove('active'));
+    let navBtn = btn || document.getElementById('nav-'+tab);
+    if(!navBtn && ['delivery','contact','privacy','about','legal'].includes(tab)){
+        navBtn = document.getElementById('nav-more');
+    }
+    if(navBtn){
+        navBtn.classList.add('active');
+        /* icon spring */
+        const ico = navBtn.querySelector('.ni');
+        if(ico){ ico.style.animation='none'; void ico.offsetWidth; ico.style.animation=''; }
+    }
+    /* legacy tab highlight */
     document.querySelectorAll('.tab').forEach(b=>b.classList.remove('on'));
-    document.getElementById('tab-'+tab)?.classList.add('on');
-    if(tab==='orders') loadOrders();
-    if(tab==='promotions') renderPromotions();
+    const legacyTab = document.getElementById('tab-'+tab);
+    if(legacyTab) legacyTab.classList.add('on');
+    /* side effects */
+    if(tab==='orders')      loadOrders();
+    if(tab==='promotions')  renderPromotions();
+    /* floating cart: hide on info panels */
+    const cf = document.getElementById('cfloat');
+    if(cf){
+        const infoTabs = ['privacy','about','legal','contact','delivery','more'];
+        cf.style.display = infoTabs.includes(tab) ? 'none' : '';
+    }
+    /* scroll to top */
+    window.scrollTo({top:0,behavior:'smooth'});
+}
+
+/* ── Expand/collapse info blocks ── */
+function toggleExpand(el){
+    el.classList.toggle('open');
+}
+
+async function fetchClientExportData(){
+    if(!CID){toast("Identifiez-vous d'abord !",'warn');return;}
+    const fd=new FormData();
+    fd.append('action','export_data');
+    try{
+        const res=await fetch(SELF,{method:'POST',body:fd});
+        const data=await res.json();
+        if(!data.success || !data.data){
+            toast(data.message||'Export impossible','error');
+            return null;
+        }
+        return data;
+    }catch(e){
+        toast('Erreur réseau export','error');
+        return null;
+    }
+}
+
+function triggerBlobDownload(content, mime, filename){
+    const blob=new Blob([content],{type:mime});
+    const url=URL.createObjectURL(blob);
+    const link=document.createElement('a');
+    link.href=url;
+    link.download=filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1200);
+}
+
+function exportDataToCsv(data){
+    const rows=[['Section','Champ','Valeur']];
+    const pushFlat=(section,obj)=>{
+        Object.entries(obj||{}).forEach(([key,value])=>{
+            rows.push([section,key, value==null ? '' : String(value)]);
+        });
+    };
+    pushFlat('client', data.client||{});
+    (data.orders||[]).forEach((row,idx)=>pushFlat(`order_${idx+1}`, row));
+    (data.notifications||[]).forEach((row,idx)=>pushFlat(`notification_${idx+1}`, row));
+    (data.favorites||[]).forEach((row,idx)=>pushFlat(`favorite_${idx+1}`, row));
+    (data.reviews||[]).forEach((row,idx)=>pushFlat(`review_${idx+1}`, row));
+    return '\uFEFF'+rows.map(cols=>cols.map(val=>{
+        const txt=String(val??'').replace(/"/g,'""');
+        return `"${txt}"`;
+    }).join(';')).join('\n');
+}
+
+async function downloadClientExport(format){
+    if(format==='pdf'){
+        window.location.href=`${SELF}?download_export=pdf`;
+        return;
+    }
+    const payload=await fetchClientExportData();
+    if(!payload) return;
+    if(format==='csv'){
+        triggerBlobDownload(
+            exportDataToCsv(payload.data),
+            'text/csv;charset=utf-8;',
+            (payload.filename || `${CLIENT_EXPORT_NAME}-${CID}.json`).replace(/\.json$/i,'.csv')
+        );
+        toast('Export CSV téléchargé','success');
+        return;
+    }
+    triggerBlobDownload(
+        JSON.stringify(payload.data,null,2),
+        'application/json;charset=utf-8',
+        payload.filename || `${CLIENT_EXPORT_NAME}-${CID}.json`
+    );
+    toast('Export JSON téléchargé','success');
+}
+
+async function requestDeleteAccount(){
+    if(!CID){toast("Identifiez-vous d'abord !",'warn');return;}
+    const btn=document.querySelector('#delete-confirm-zone .btn-r');
+    if(btn){
+        btn.disabled=true;
+        btn.innerHTML='<div class="sp"></div>';
+    }
+    const fd=new FormData();
+    fd.append('action','request_delete');
+    try{
+        const res=await fetch(SELF,{method:'POST',body:fd});
+        const data=await res.json();
+        if(btn){
+            btn.disabled=false;
+            btn.innerHTML='<i class="fas fa-check"></i> Confirmer la demande';
+        }
+        if(data.success){
+            document.getElementById('delete-confirm-zone')?.classList.remove('show');
+            toast(data.message||'Demande envoyée','success');
+        }else{
+            toast(data.message||'Envoi impossible','error');
+        }
+    }catch(e){
+        if(btn){
+            btn.disabled=false;
+            btn.innerHTML='<i class="fas fa-check"></i> Confirmer la demande';
+        }
+        toast('Erreur réseau','error');
+    }
+}
+async function logWhatsAppClick(clickType, orderId=0){
+    if(!CID) return;
+    const fd=new FormData();
+    fd.append('action','log_whatsapp_click');
+    fd.append('click_type',clickType);
+    fd.append('order_id',orderId);
+    fd.append('target_phone',ADMIN_WHATSAPP_NUMBER);
+    try{ await fetch(SELF,{method:'POST',body:fd}); }catch(e){}
+}
+function buildOrderWhatsAppLink(order, mode='track'){
+    const orderNumber=String(order?.order_number||'');
+    const clientName=String(order?.client_name || 'Client');
+    const address=String(order?.delivery_address||'');
+    const messageMap={
+        track:`Bonjour Espérance H2O, je souhaite suivre ma commande ${orderNumber}. Client: ${clientName}.`,
+        edit:`Bonjour Espérance H2O, je souhaite modifier ma commande ${orderNumber} avant livraison.${address ? ` Adresse: ${address}.` : ''}`,
+        issue:`Bonjour Espérance H2O, je signale un problème concernant la commande ${orderNumber}. Client: ${clientName}.`,
+    };
+    return `https://wa.me/${ADMIN_WHATSAPP_NUMBER}?text=${encodeURIComponent(messageMap[mode]||messageMap.track)}`;
 }
 
 /* ── Toast ── */
@@ -3421,6 +5084,10 @@ function reorderOrder(orderId){
 function formatMoney(v){return new Intl.NumberFormat('fr-FR',{maximumFractionDigits:0}).format(Number(v||0));}
 function calculateCartSubtotal(){
     return cart.reduce((s,i)=>s+Number(i.sub||0),0);
+}
+function getSelectedDeliveryZone(){
+    const zoneId=Number(document.getElementById('delivery-zone')?.value||0);
+    return DELIVERY_ZONES.find(z=>Number(z.id)===zoneId) || null;
 }
 function resetAppliedCoupon(silent=false){
     appliedCoupon=null;
@@ -3658,9 +5325,13 @@ function openCheckout(state={}){
     const currentPay=state.pay ?? document.getElementById('pay-meth')?.value ?? 'cash';
     const currentNotes=state.notes ?? document.getElementById('ord-notes')?.value ?? '';
     const currentCode=state.couponCode ?? document.getElementById('checkout-coupon-code')?.value ?? appliedCoupon?.code ?? '';
+    const currentZoneId=String(state.zoneId ?? document.getElementById('delivery-zone')?.value ?? '');
     const subtotal=calculateCartSubtotal();
     const discount=Number(appliedCoupon?.discount_amount||0);
-    const total=Math.max(0, subtotal-discount);
+    const selectedZone=DELIVERY_ZONES.find(z=>String(z.id)===String(currentZoneId)) || null;
+    const deliveryFee=Number(selectedZone?.delivery_fee||0);
+    const total=Math.max(0, subtotal-discount+deliveryFee);
+    const zoneOptions=DELIVERY_ZONES.map(z=>`<option value="${z.id}" ${String(currentZoneId)===String(z.id)?'selected':''}>${esc(z.zone_name)} · ${esc(z.delivery_delay_label)} · ${formatMoney(z.delivery_fee)} CFA</option>`).join('');
     let rows=cart.map(i=>`
         <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 9px;border-radius:8px;border:1px solid rgba(255,255,255,.04);background:rgba(0,0,0,.12);margin-bottom:5px">
           <div style="display:flex;align-items:center;gap:7px">${i.imageUrl?`<img src="${esc(i.imageUrl)}" alt="${esc(i.product_name)}" style="width:26px;height:26px;border-radius:8px;object-fit:cover;border:1px solid rgba(255,255,255,.08)">`:`<span>${i.icon}</span>`}<span style="font-family:var(--fh);font-size:11px;font-weight:900;color:var(--text)">${i.product_name}${i.meta?` <small style="color:var(--gold)">${esc(i.meta)}</small>`:''}</span></div>
@@ -3678,10 +5349,11 @@ function openCheckout(state={}){
           <div id="coupon-feedback" class="coupon-feedback" style="display:${appliedCoupon?'block':'none'};margin-top:8px;color:${appliedCoupon?'var(--neon)':'var(--muted)'}">${appliedCoupon?`Coupon ${esc(appliedCoupon.code)} appliqué: -${formatMoney(discount)} CFA`:''}</div>
         </div>
         <div style="background:linear-gradient(135deg,rgba(50,190,143,.14),rgba(6,182,212,.09));border:2px solid rgba(50,190,143,.3);border-radius:12px;padding:14px;text-align:center;margin-bottom:12px">
-          <div style="font-family:var(--fh);font-size:10px;font-weight:700;color:var(--muted);margin-bottom:5px">Sous-total : ${formatMoney(subtotal)} CFA${discount>0?` · Remise coupon : -${formatMoney(discount)} CFA`:''}</div>
+          <div style="font-family:var(--fh);font-size:10px;font-weight:700;color:var(--muted);margin-bottom:5px">Sous-total : ${formatMoney(subtotal)} CFA${discount>0?` · Remise coupon : -${formatMoney(discount)} CFA`:''}${deliveryFee>0?` · Livraison : ${formatMoney(deliveryFee)} CFA`:''}</div>
           <div style="font-family:var(--fh);font-size:10px;font-weight:900;color:var(--muted);text-transform:uppercase;letter-spacing:2px;margin-bottom:4px">Total à payer</div>
           <div style="font-family:var(--fh);font-size:26px;font-weight:900;color:var(--neon)">${total.toLocaleString('fr-FR')} <small style="font-size:12px;color:var(--muted)">CFA</small></div>
         </div>
+        <div class="fg"><label>Zone de livraison</label><select id="delivery-zone" onchange="refreshCheckoutTotals()"><option value="">Choisir une zone</option>${zoneOptions}</select>${selectedZone?`<div style="margin-top:6px;font-size:10px;color:var(--muted)">${esc(selectedZone.notes||'')}</div>`:''}</div>
         <div class="fg"><label>Adresse de livraison *</label><textarea id="del-addr" placeholder="Adresse complète, quartier, repère…">${esc(currentAddr)}</textarea></div>
         <div class="fg"><label>Mode de paiement</label><select id="pay-meth"><option value="cash" ${currentPay==='cash'?'selected':''}>💵 Espèces</option><option value="mobile_money" ${currentPay==='mobile_money'?'selected':''}>📱 Mobile Money</option></select></div>
         <div class="fg"><label>Instructions (optionnel)</label><textarea id="ord-notes" placeholder="Ex : Appeler avant la livraison…">${esc(currentNotes)}</textarea></div>
@@ -3689,6 +5361,15 @@ function openCheckout(state={}){
     document.getElementById('co-modal').classList.add('show');
 }
 function closeCo(){document.getElementById('co-modal').classList.remove('show');}
+function refreshCheckoutTotals(){
+    openCheckout({
+        addr: document.getElementById('del-addr')?.value ?? '',
+        pay: document.getElementById('pay-meth')?.value ?? 'cash',
+        notes: document.getElementById('ord-notes')?.value ?? '',
+        couponCode: document.getElementById('checkout-coupon-code')?.value ?? appliedCoupon?.code ?? '',
+        zoneId: document.getElementById('delivery-zone')?.value ?? '',
+    });
+}
 
 async function applyCheckoutCoupon(){
     const input=document.getElementById('checkout-coupon-code');
@@ -3738,6 +5419,7 @@ async function submitOrder(){
     const addr=document.getElementById('del-addr')?.value.trim();
     const pay=document.getElementById('pay-meth')?.value||'cash';
     const notes=document.getElementById('ord-notes')?.value.trim()||'';
+    const deliveryZoneId=document.getElementById('delivery-zone')?.value||'';
     if(!addr){toast('Adresse obligatoire !','warn');return;}
     const btn=document.getElementById('btn-order');
     btn.disabled=true;btn.innerHTML='<div class="sp"></div> Envoi en cours…';
@@ -3746,6 +5428,7 @@ async function submitOrder(){
     fd.append('action','create_order');fd.append('company_id',CO_ID);fd.append('city_id',CI_ID);
     fd.append('client_id',CID);fd.append('delivery_address',addr);fd.append('payment_method',pay);
     fd.append('notes',notes);fd.append('items',JSON.stringify(payload));
+    fd.append('delivery_zone_id',deliveryZoneId);
     fd.append('coupon_code', appliedCoupon?.code || (document.getElementById('checkout-coupon-code')?.value.trim().toUpperCase()||''));
     try{
         const res=await fetch(SELF,{method:'POST',body:fd});
@@ -3954,6 +5637,13 @@ function updateOrderStats(orders){
     document.getElementById('st-spent').textContent=spent>999999?Math.round(spent/1000)+'k':Math.round(spent/1000)+'k';
     const tc=document.getElementById('orders-tab-count');
     if(orders.length){tc.style.display='flex';tc.textContent=orders.length;}
+    /* ── Android nav badge ── */
+    const nb=document.getElementById('nav-badge-orders');
+    if(nb){
+        const pending=orders.filter(o=>['pending','confirmed','delivering'].includes(o.status)).length;
+        if(pending>0){nb.textContent=pending;nb.classList.remove('hidden');}
+        else{nb.classList.add('hidden');}
+    }
 }
 
 function filterOrders(filter,btn){
@@ -4032,6 +5722,11 @@ function buildOrderCard(order,delay){
     const moreItems=items.length>3?`<div style="font-family:var(--fh);font-size:9px;color:var(--muted);text-align:center;padding:4px">+ ${items.length-3} autres articles</div>`:'';
     const dateStr=new Date(order.created_at.replace(' ','T')).toLocaleString('fr-FR',{day:'2-digit',month:'2-digit',year:'2-digit',hour:'2-digit',minute:'2-digit'});
     const payIco=order.payment_method==='mobile_money'?'📱':'💵';
+    const waActions=`<div class="wa-actions">
+        <a class="wa-pill" href="${buildOrderWhatsAppLink(order,'track')}" target="_blank" rel="noopener" onclick="logWhatsAppClick('track',${Number(order.id||0)})"><i class="fab fa-whatsapp"></i> Suivre</a>
+        ${canCancel?`<a class="wa-pill" href="${buildOrderWhatsAppLink(order,'edit')}" target="_blank" rel="noopener" onclick="logWhatsAppClick('edit',${Number(order.id||0)})"><i class="fab fa-whatsapp"></i> Modifier</a>`:''}
+        <a class="wa-pill" href="${buildOrderWhatsAppLink(order,'issue')}" target="_blank" rel="noopener" onclick="logWhatsAppClick('issue',${Number(order.id||0)})"><i class="fab fa-whatsapp"></i> Signaler</a>
+      </div>`;
     return `<div class="order-card" style="animation-delay:${delay*0.04}s">
         <div class="oc-header" onclick="toggleOC(${order.id})">
           <div class="oc-top">
@@ -4055,10 +5750,13 @@ function buildOrderCard(order,delay){
           ${itemsHtml}${moreItems}
           <div class="order-meta">
             ${order.delivery_address?`<div class="meta-pill addr"><i class="fas fa-location-dot"></i> ${order.delivery_address}</div>`:''}
+            ${order.delivery_zone_name?`<div class="meta-pill"><i class="fas fa-map-marked-alt"></i> ${order.delivery_zone_name}</div>`:''}
+            ${Number(order.delivery_fee||0)>0?`<div class="meta-pill"><i class="fas fa-coins"></i> Livraison ${(+order.delivery_fee).toLocaleString('fr-FR')} CFA</div>`:''}
             ${order.city_name?`<div class="meta-pill"><i class="fas fa-city"></i> ${order.city_name}</div>`:''}
             ${couponInfo}
             ${order.notes?`<div class="meta-pill"><i class="fas fa-sticky-note"></i> ${order.notes}</div>`:''}
           </div>
+          ${waActions}
           <div style="display:flex;gap:7px;margin-top:12px">
             <button onclick="openDetail(${order.id})" class="btn btn-g" style="flex:1;font-size:10px;padding:9px">
               <i class="fas fa-eye"></i> Voir détail
@@ -4134,6 +5832,9 @@ function renderDetail(order){
     const total=(+order.total_amount).toLocaleString('fr-FR');
     const couponDiscount=+order.coupon_discount||0;
     const dateStr=new Date(order.created_at.replace(' ','T')).toLocaleString('fr-FR',{weekday:'long',day:'2-digit',month:'long',year:'numeric',hour:'2-digit',minute:'2-digit'});
+    const waTrackLink=buildOrderWhatsAppLink(order,'track');
+    const waEditLink=buildOrderWhatsAppLink(order,'edit');
+    const waIssueLink=buildOrderWhatsAppLink(order,'issue');
     const itemsHtml=items.map(it=>{
         const ico=(it.product_name.toLowerCase().includes('eau')||it.product_name.toLowerCase().includes('water'))?'💧':'🫙';
         const sub=(+it.subtotal).toLocaleString('fr-FR');
@@ -4175,7 +5876,13 @@ function renderDetail(order){
         </div>
         ${order.delivery_address?`<div style="margin-bottom:12px"><div class="oc-section-title">Livraison</div>
           <div style="padding:10px;border-radius:9px;background:rgba(0,0,0,.2);border:1px solid rgba(255,255,255,.06);font-family:var(--fh);font-size:11px;font-weight:700;color:var(--text2)"><i class="fas fa-location-dot" style="color:var(--neon)"></i> ${order.delivery_address}</div>
+          ${order.delivery_zone_name?`<div style="margin-top:6px;padding:9px;border-radius:9px;background:rgba(0,0,0,.15);border:1px solid rgba(255,255,255,.05);font-family:var(--fh);font-size:10px;font-weight:700;color:var(--muted)"><i class="fas fa-map-marked-alt"></i> ${order.delivery_zone_name}${Number(order.delivery_fee||0)>0?` · ${(+order.delivery_fee).toLocaleString('fr-FR')} CFA`:''}</div>`:''}
           ${order.notes?`<div style="margin-top:6px;padding:9px;border-radius:9px;background:rgba(0,0,0,.15);border:1px solid rgba(255,255,255,.05);font-family:var(--fh);font-size:10px;font-weight:700;color:var(--muted)"><i class="fas fa-sticky-note"></i> ${order.notes}</div>`:''}</div>`:''}
+        <div class="wa-actions" style="margin-bottom:12px">
+          <a class="wa-pill" href="${waTrackLink}" target="_blank" rel="noopener" onclick="logWhatsAppClick('track',${Number(order.id||0)})"><i class="fab fa-whatsapp"></i> Suivre ma commande</a>
+          ${['pending','confirmed'].includes(order.status)?`<a class="wa-pill" href="${waEditLink}" target="_blank" rel="noopener" onclick="logWhatsAppClick('edit',${Number(order.id||0)})"><i class="fab fa-whatsapp"></i> Modifier</a>`:''}
+          <a class="wa-pill" href="${waIssueLink}" target="_blank" rel="noopener" onclick="logWhatsAppClick('issue',${Number(order.id||0)})"><i class="fab fa-whatsapp"></i> Signaler un problème</a>
+        </div>
         ${['pending','confirmed'].includes(order.status)?`<button onclick="closeDetail();askCancel(${order.id},'${order.order_number}')" class="btn btn-r btn-full"><i class="fas fa-ban"></i> ANNULER CETTE COMMANDE</button>`:''}`;
 }
 
@@ -4350,8 +6057,247 @@ setTimeout(()=>{
 },600);
 <?php endif; ?>
 
-console.log('%c 💧 ESPERANCE H2O v2 — MOBILE FIRST ','background:#04090e;color:#32be8f;font-family:serif;padding:5px;border:1px solid #32be8f;border-radius:4px');
+/* ══════════════════════════════════════════════════════
+   FIGMA MICRO-INTERACTIONS ENGINE — ESPERANCE H2O 💧
+══════════════════════════════════════════════════════ */
+(function(){
+'use strict';
+
+/* ─── Ripple effect ─── */
+function spawnRipple(e){
+    const el = e.currentTarget;
+    const r  = el.getBoundingClientRect();
+    const rpl = document.createElement('span');
+    rpl.className = 'ripple-wave';
+    rpl.style.left = (e.clientX - r.left) + 'px';
+    rpl.style.top  = (e.clientY - r.top)  + 'px';
+    el.appendChild(rpl);
+    rpl.addEventListener('animationend', () => rpl.remove(), {once:true});
+}
+function bindRipples(){
+    document.querySelectorAll('.btn,.badd,.ghost-btn,.tab,.ftab,.shop-pill,.promo-chip')
+        .forEach(el => { el.removeEventListener('click', spawnRipple); el.addEventListener('click', spawnRipple); });
+}
+
+/* ─── Flying dot to cart ─── */
+function flyToCart(srcEl){
+    const cart = document.querySelector('.chico');
+    if(!cart || !srcEl) return;
+    const s = srcEl.getBoundingClientRect();
+    const d = cart.getBoundingClientRect();
+    const dot = document.createElement('div');
+    dot.className = 'cart-fly-dot';
+    dot.textContent = '🧃';
+    dot.style.cssText = `left:${s.left + s.width/2 - 22}px;top:${s.top + s.height/2 - 22}px;`;
+    document.body.appendChild(dot);
+    const dx = (d.left + d.width/2  - 22) - (s.left + s.width/2  - 22);
+    const dy = (d.top  + d.height/2 - 22) - (s.top  + s.height/2 - 22);
+    dot.animate([
+        {transform:'translate(0,0) scale(1)',   opacity:1},
+        {transform:`translate(${dx*.38}px,${dy*.3 - 55}px) scale(1.22)`, opacity:1, offset:.38},
+        {transform:`translate(${dx}px,${dy}px) scale(.25)`, opacity:0}
+    ],{duration:640, easing:'cubic-bezier(.4,0,.2,1)', fill:'forwards'})
+    .onfinish = () => {
+        dot.remove();
+        /* cart spring */
+        ['.chico','.ccnt'].forEach(sel => {
+            const el = document.querySelector(sel);
+            if(!el) return;
+            const cls = sel === '.ccnt' ? 'badge-pop' : 'cart-bounce';
+            el.classList.remove(cls); void el.offsetWidth; el.classList.add(cls);
+            el.addEventListener('animationend', () => el.classList.remove(cls), {once:true});
+        });
+        /* cfloat bounce */
+        const cf = document.querySelector('.cfloat');
+        if(cf){ cf.classList.remove('f-bounce'); void cf.offsetWidth; cf.classList.add('f-bounce'); cf.addEventListener('animationend',()=>cf.classList.remove('f-bounce'),{once:true}); }
+    };
+}
+
+/* ─── Add-to-cart button feedback ─── */
+function bindAddBtns(){
+    document.querySelectorAll('.badd').forEach(btn => {
+        if(btn.dataset.figmaBound) return;
+        btn.dataset.figmaBound = '1';
+        btn.addEventListener('click', function(){
+            const pcard = this.closest('.pcard');
+            flyToCart(pcard ? pcard.querySelector('.pimg') : this);
+            const orig = this.textContent;
+            this.classList.add('is-adding');
+            setTimeout(()=>{ this.classList.remove('is-adding'); this.classList.add('is-added'); this.textContent='✓ Ajouté!'; },180);
+            setTimeout(()=>{ this.classList.remove('is-added'); this.textContent=orig; },1300);
+        });
+    });
+}
+
+/* ─── Stagger product cards ─── */
+function staggerCards(){
+    const io = new IntersectionObserver(entries => {
+        entries.forEach(e => {
+            if(!e.isIntersecting) return;
+            const idx = Array.from(e.target.parentElement.children).indexOf(e.target);
+            setTimeout(()=>e.target.classList.add('f-reveal'), idx * 55);
+            io.unobserve(e.target);
+        });
+    },{threshold:.08});
+    document.querySelectorAll('.pcard').forEach(c => { c.classList.remove('f-reveal'); io.observe(c); });
+}
+
+/* ─── Scroll reveal for blocks ─── */
+function initScrollReveal(){
+    const io = new IntersectionObserver(entries => {
+        entries.forEach(e => { if(e.isIntersecting){ e.target.classList.add('s-visible'); io.unobserve(e.target); } });
+    },{threshold:.07, rootMargin:'0px 0px -28px 0px'});
+    document.querySelectorAll('.order-card,.stat-card,.promo-card,.recommend-card,.loyalty-card,.offer-card,.card:not(.cfloat)')
+        .forEach(el => { el.classList.add('s-hidden'); io.observe(el); });
+}
+
+/* ─── Quantity button pop ─── */
+function initQPop(){
+    document.addEventListener('click', e => {
+        const b = e.target.closest('.qbtn');
+        if(!b) return;
+        b.classList.remove('q-pop'); void b.offsetWidth; b.classList.add('q-pop');
+        b.addEventListener('animationend',()=>b.classList.remove('q-pop'),{once:true});
+    });
+}
+
+/* ─── Stat counter number animation ─── */
+function animateCounters(){
+    document.querySelectorAll('.stat-val').forEach(el => {
+        const raw = el.textContent.trim();
+        const num = parseFloat(raw.replace(/[^\d.]/g,''));
+        if(isNaN(num)||num===0) return;
+        const suffix = raw.replace(/[\d.]/g,'');
+        el.classList.add('s-pop');
+        let start = null;
+        const dur = 900;
+        function step(ts){
+            if(!start) start=ts;
+            const p = Math.min((ts-start)/dur, 1);
+            const ease = 1-Math.pow(1-p,3);
+            el.textContent = (Number.isInteger(num)?Math.round(num*ease):(num*ease).toFixed(1)) + suffix;
+            if(p<1) requestAnimationFrame(step);
+        }
+        requestAnimationFrame(step);
+    });
+}
+
+/* ─── Init ─── */
+function init(){
+    bindRipples();
+    staggerCards();
+    initScrollReveal();
+    bindAddBtns();
+    initQPop();
+
+    /* stats counter on visibility */
+    const statsBar = document.querySelector('.stats-bar');
+    if(statsBar){
+        new IntersectionObserver(entries=>{
+            if(entries[0].isIntersecting) animateCounters();
+        },{threshold:.5}).observe(statsBar);
+    }
+
+    /* re-init on tab switch */
+    document.querySelectorAll('.tab,.nav-item').forEach(tab => {
+        tab.addEventListener('click',()=>{
+            setTimeout(()=>{ staggerCards(); bindRipples(); bindAddBtns(); },60);
+        });
+    });
+
+    /* ripple on nav items */
+    document.querySelectorAll('.nav-item').forEach(el => {
+        el.addEventListener('click', spawnRipple);
+    });
+
+    /* badge promos at startup */
+    const promoCount = <?= count($promotionCampaigns) ?>;
+    const nbp = document.getElementById('nav-badge-promos');
+    if(nbp && promoCount > 0){ nbp.textContent = promoCount; nbp.classList.remove('hidden'); }
+
+    /* active pill enter animation */
+    const activeNav = document.querySelector('.nav-item.active .ni');
+    if(activeNav){ activeNav.style.animation='none'; void activeNav.offsetWidth; activeNav.style.animation=''; }
+
+    const heroTrack=document.getElementById('hero-carousel-track');
+    const heroDots=[...document.querySelectorAll('[data-hero-dot]')];
+    if(heroTrack && heroDots.length>1){
+        let heroIndex=0;
+        let heroTimer=null;
+        let heroStartX=0;
+        const paintHero=()=>{
+            heroTrack.style.transform=`translateX(-${heroIndex*100}%)`;
+            heroDots.forEach((dot,idx)=>dot.classList.toggle('active',idx===heroIndex));
+        };
+        const queueHero=()=>{
+            clearInterval(heroTimer);
+            heroTimer=setInterval(()=>{
+                heroIndex=(heroIndex+1)%heroDots.length;
+                paintHero();
+            },4200);
+        };
+        heroDots.forEach((dot,idx)=>dot.addEventListener('click',()=>{
+            heroIndex=idx;
+            paintHero();
+            queueHero();
+        }));
+        heroTrack.addEventListener('touchstart',e=>{
+            heroStartX=e.changedTouches[0]?.clientX||0;
+        },{passive:true});
+        heroTrack.addEventListener('touchend',e=>{
+            const endX=e.changedTouches[0]?.clientX||0;
+            const delta=endX-heroStartX;
+            if(Math.abs(delta)>35){
+                heroIndex=delta<0 ? (heroIndex+1)%heroDots.length : (heroIndex-1+heroDots.length)%heroDots.length;
+                paintHero();
+                queueHero();
+            }
+        },{passive:true});
+        paintHero();
+        queueHero();
+    }
+}
+
+document.readyState==='loading'
+    ? document.addEventListener('DOMContentLoaded', init)
+    : init();
+
+})();
+
+console.log('%c 💧 ESPERANCE H2O v2 — MOBILE FIRST ','background:#f4f7fb;color:#00a86b;font-family:serif;padding:5px;border:1px solid #00a86b;border-radius:4px');
 </script>
 <?= render_legal_footer(['theme' => 'dark']) ?>
+
+<!-- ══════════════════════════════════════════
+     ANDROID NATIVE BOTTOM NAVIGATION BAR
+══════════════════════════════════════════ -->
+<?php if($client_id): ?>
+<nav class="android-nav" id="android-nav" role="navigation" aria-label="Navigation principale">
+
+  <button class="nav-item active" id="nav-shop" onclick="navSwitch('shop',this)" aria-label="Commander">
+    <i class="fas fa-store ni"></i>
+    <span class="nl">Commander</span>
+  </button>
+
+  <button class="nav-item" id="nav-promotions" onclick="navSwitch('promotions',this)" aria-label="Promotions">
+    <i class="fas fa-percent ni"></i>
+    <span class="nl">Promos</span>
+    <span class="nav-badge hidden" id="nav-badge-promos"><?= count($promotionCampaigns) ?></span>
+  </button>
+
+  <button class="nav-item" id="nav-orders" onclick="navSwitch('orders',this)" aria-label="Mes commandes">
+    <i class="fas fa-receipt ni"></i>
+    <span class="nl">Commandes</span>
+    <span class="nav-badge hidden" id="nav-badge-orders">0</span>
+  </button>
+
+  <button class="nav-item" id="nav-more" onclick="navSwitch('more',this)" aria-label="Plus">
+    <i class="fas fa-ellipsis-h ni"></i>
+    <span class="nl">Plus</span>
+  </button>
+
+</nav>
+<?php endif; ?>
+
 </body>
 </html>

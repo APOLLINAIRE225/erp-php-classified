@@ -168,7 +168,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_FILES['document'])) {
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 <style>
 @font-face{font-family:'C059';src:local('C059-Bold'),local('C059 Bold'),local('Century Schoolbook');font-weight:700 900;font-style:normal}
-:root{--bg:#04090e;--surf:#081420;--card:#0d1e2c;--card2:#122030;--bord:rgba(50,190,143,0.16);--neon:#32be8f;--neon2:#19ffa3;--red:#ff3553;--orange:#ff9140;--blue:#3d8cff;--gold:#ffd060;--purple:#a855f7;--cyan:#06b6d4;--text:#e0f2ea;--text2:#b8d8cc;--muted:#5a8070;--glow:0 0 26px rgba(50,190,143,0.45);--glow-r:0 0 26px rgba(255,53,83,0.45);--glow-gold:0 0 26px rgba(255,208,96,0.4);--fh:'C059','Source Serif 4','Playfair Display','Book Antiqua',Georgia,serif;--fb:'Inter','Segoe UI',system-ui,sans-serif}
+:root{--bg:#0f1726;--surf:#162033;--card:#1b263b;--card2:#22324a;--bord:rgba(148,163,184,0.18);--neon:#00a86b;--neon2:#00c87a;--red:#e53935;--orange:#f57c00;--blue:#1976d2;--gold:#f9a825;--purple:#a855f7;--cyan:#06b6d4;--text:#e8eef8;--text2:#bfd0e4;--muted:#8ea3bd;--glow:0 8px 24px rgba(0,168,107,0.18);--glow-r:0 8px 24px rgba(229,57,53,0.18);--glow-gold:0 8px 24px rgba(249,168,37,0.18);--fh:'C059','Source Serif 4','Playfair Display','Book Antiqua',Georgia,serif;--fb:'Inter','Segoe UI',system-ui,sans-serif}
 *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
 html{scroll-behavior:smooth}
 body{font-family:var(--fb);font-size:15px;line-height:1.7;background:var(--bg);color:var(--text);min-height:100vh;overflow-x:hidden;padding:40px 20px}
@@ -188,9 +188,9 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;back
 .form-group{margin-bottom:25px}
 .form-label{display:block;font-family:var(--fh);font-weight:900;color:var(--text);margin-bottom:8px;font-size:14px;letter-spacing:0.4px}
 .form-label .required{color:var(--red);margin-left:4px}
-.form-control,.form-select,.form-textarea{width:100%;padding:14px 18px;background:rgba(0,0,0,0.3);border:1.5px solid var(--bord);border-radius:12px;color:var(--text);font-size:15px;font-weight:500;transition:all 0.3s;font-family:var(--fb)}
+.form-control,.form-select,.form-textarea{width:100%;padding:14px 18px;background:rgba(15,23,38,0.72);border:1.5px solid var(--bord);border-radius:12px;color:var(--text);font-size:15px;font-weight:500;transition:all 0.3s;font-family:var(--fb)}
 .form-control:focus,.form-select:focus,.form-textarea:focus{outline:none;border-color:var(--neon);box-shadow:var(--glow);background:rgba(50,190,143,0.05)}
-.form-select option{background:#0d1e2c;color:var(--text)}
+.form-select option{background:#1b263b;color:var(--text)}
 .form-textarea{resize:vertical;min-height:100px}
 .file-upload-area{border:3px dashed var(--bord);border-radius:16px;padding:40px;text-align:center;background:rgba(0,0,0,0.2);transition:all 0.3s;cursor:pointer}
 .file-upload-area:hover{border-color:var(--neon);background:rgba(50,190,143,0.05)}
@@ -205,7 +205,7 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;back
 .btn{padding:16px 32px;border:none;border-radius:12px;font-size:16px;font-family:var(--fh);font-weight:900;letter-spacing:0.4px;cursor:pointer;transition:all 0.3s;display:inline-flex;align-items:center;gap:10px;text-decoration:none}
 .btn-primary{background:rgba(50,190,143,0.12);border:1.5px solid rgba(50,190,143,0.3);color:var(--neon);box-shadow:0 8px 20px rgba(50,190,143,0.3)}
 .btn-primary:hover{background:var(--neon);color:var(--bg);box-shadow:var(--glow);transform:translateY(-3px)}
-.btn-secondary{background:rgba(255,255,255,0.05);border:1.5px solid var(--bord);color:var(--text2)}
+.btn-secondary{background:rgba(255,255,255,0.04);border:1.5px solid var(--bord);color:var(--text2)}
 .btn-secondary:hover{background:rgba(255,255,255,0.1);border-color:var(--text2)}
 .form-actions{display:flex;gap:15px;margin-top:30px}
 .form-actions button{flex:1}
@@ -219,7 +219,34 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;back
 .confidentiality-option input[type="radio"]{position:absolute;opacity:0}
 .confidentiality-label{display:block;padding:16px 20px;border:1.5px solid var(--bord);border-radius:12px;cursor:pointer;transition:all 0.3s;text-align:center;font-family:var(--fh);font-weight:900;background:rgba(0,0,0,0.2);color:var(--text2)}
 .confidentiality-option input[type="radio"]:checked+.confidentiality-label{border-color:var(--neon);background:rgba(50,190,143,0.1);box-shadow:var(--glow);color:var(--neon)}
-@media(max-width:768px){.card{padding:25px}.form-actions{flex-direction:column}.confidentiality-grid{grid-template-columns:1fr}}
+@media(max-width:768px){
+    body{line-height:1.5;padding:12px 8px 24px}
+    .container{max-width:680px}
+    .card{padding:16px 14px;border-radius:18px}
+    .header{margin-bottom:18px}
+    .header h1{font-size:20px;gap:10px;line-height:1.25}
+    .header h1 i{font-size:26px}
+    .security-badge{padding:7px 12px;font-size:11px;border-radius:999px;margin-top:10px}
+    .alert{padding:12px 14px;font-size:12px;border-radius:12px;margin-bottom:14px}
+    .encryption-info{padding:14px;border-radius:14px;margin-bottom:16px}
+    .encryption-info h3{font-size:14px}
+    .encryption-info li{font-size:12px;padding:5px 0}
+    .form-group{margin-bottom:16px}
+    .form-label{font-size:11px}
+    .form-control,.form-select,.form-textarea{padding:11px 12px;font-size:13px;border-radius:12px}
+    .form-textarea{min-height:92px}
+    .file-upload-area{padding:22px 14px;border-radius:14px}
+    .file-upload-icon{font-size:34px;margin-bottom:10px}
+    .file-upload-text{font-size:14px}
+    .file-upload-hint{font-size:11px}
+    .file-info{padding:12px 14px;border-radius:12px;gap:8px;align-items:flex-start;flex-direction:column}
+    .file-info-name{font-size:12px}
+    .file-info-remove{padding:7px 12px;font-size:11px}
+    .confidentiality-grid{grid-template-columns:1fr;gap:8px}
+    .confidentiality-label{padding:12px 14px;font-size:12px;border-radius:12px}
+    .form-actions{flex-direction:column;gap:8px;margin-top:18px}
+    .btn{width:100%;justify-content:center;padding:11px 12px;font-size:12px;border-radius:12px}
+}
 </style>
 </head>
 <body>

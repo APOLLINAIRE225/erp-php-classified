@@ -16,6 +16,8 @@ header("X-Frame-Options: SAMEORIGIN");
 require_once APP_ROOT . '/app/core/DB.php';
 require_once APP_ROOT . '/app/core/Auth.php';
 require_once APP_ROOT . '/app/core/Middleware.php';
+require_once __DIR__ . '/webpush_lib.php';
+require_once __DIR__ . '/fcm_lib.php';
 use App\Core\DB; use App\Core\Auth; use App\Core\Middleware;
 
 Auth::check();
@@ -38,6 +40,122 @@ function jErr(string $m, int $c=400):void{
     exit;
 }
 function eH(?string $s):string{ return htmlspecialchars($s??'',ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8'); }
+
+function presenceStorePath(): string {
+    return PROJECT_ROOT . '/messaging/runtime/presence.json';
+}
+
+function ensurePresenceStore(): string {
+    $dir = dirname(presenceStorePath());
+    if (!is_dir($dir)) {
+        mkdir($dir, 0777, true);
+    }
+    $file = presenceStorePath();
+    if (!is_file($file)) {
+        file_put_contents($file, '{}', LOCK_EX);
+    }
+    return $file;
+}
+
+function withPresenceStore(callable $cb) {
+    $file = ensurePresenceStore();
+    $fp = fopen($file, 'c+');
+    if (!$fp) {
+        throw new RuntimeException('Impossible d\'ouvrir le cache de présence');
+    }
+    try {
+        if (!flock($fp, LOCK_EX)) {
+            throw new RuntimeException('Verrou présence indisponible');
+        }
+        rewind($fp);
+        $raw = stream_get_contents($fp);
+        $data = json_decode($raw ?: '{}', true);
+        if (!is_array($data)) $data = [];
+        $result = $cb($data);
+        rewind($fp);
+        ftruncate($fp, 0);
+        fwrite($fp, json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES));
+        fflush($fp);
+        flock($fp, LOCK_UN);
+        fclose($fp);
+        return $result;
+    } catch (Throwable $e) {
+        flock($fp, LOCK_UN);
+        fclose($fp);
+        throw $e;
+    }
+}
+
+function touchPresence(int $userId, string $username, string $role, string $state='online'): array {
+    $now = time();
+    $sessionId = session_id() ?: ('sess_'.$userId);
+    return withPresenceStore(function (&$data) use ($userId, $username, $role, $state, $now, $sessionId) {
+        foreach ($data as $uid => $row) {
+            if (!is_array($row)) unset($data[$uid]);
+        }
+        $cutoff = $now - 86400;
+        foreach ($data as $uid => $row) {
+            if ((int)($row['last_seen'] ?? 0) < $cutoff) unset($data[$uid]);
+        }
+        $data[(string)$userId] = [
+            'user_id' => $userId,
+            'username' => $username,
+            'role' => $role,
+            'session_id' => $sessionId,
+            'state' => $state,
+            'last_seen' => $now,
+        ];
+        return $data[(string)$userId];
+    });
+}
+
+function getPresenceMap(): array {
+    $file = ensurePresenceStore();
+    $raw = @file_get_contents($file);
+    $data = json_decode($raw ?: '{}', true);
+    if (!is_array($data)) return [];
+    $now = time();
+    $out = [];
+    foreach ($data as $uid => $row) {
+        if (!is_array($row)) continue;
+        $lastSeen = (int)($row['last_seen'] ?? 0);
+        $state = (string)($row['state'] ?? 'offline');
+        $isFresh = $lastSeen > 0 && ($now - $lastSeen) <= 70;
+        $statusState = !$isFresh ? 'offline' : ($state === 'away' ? 'away' : 'online');
+        $isOnline = $statusState !== 'offline';
+        $out[(string)$uid] = [
+            'user_id' => (int)($row['user_id'] ?? $uid),
+            'username' => (string)($row['username'] ?? ''),
+            'role' => (string)($row['role'] ?? ''),
+            'last_seen' => $lastSeen,
+            'is_online' => $isOnline,
+            'status_state' => $statusState,
+            'status_text' => $statusState === 'online' ? 'En ligne' : ($statusState === 'away' ? 'Absent' : ($lastSeen > 0 ? ('Vu à '.date('Y-m-d H:i:s', $lastSeen)) : 'Hors ligne')),
+        ];
+    }
+    return $out;
+}
+
+function enrichUsersWithPresence(array $users): array {
+    $presence = getPresenceMap();
+    foreach ($users as &$user) {
+        $row = $presence[(string)($user['id'] ?? 0)] ?? null;
+        $user['is_online'] = (bool)($row['is_online'] ?? false);
+        $user['last_seen'] = (int)($row['last_seen'] ?? 0);
+        $user['status_state'] = (string)($row['status_state'] ?? 'offline');
+        $user['status_text'] = (string)($row['status_text'] ?? 'Hors ligne');
+    }
+    unset($user);
+    usort($users, static function($a, $b) {
+        $ao = !empty($a['is_online']) ? 1 : 0;
+        $bo = !empty($b['is_online']) ? 1 : 0;
+        if ($ao !== $bo) return $bo <=> $ao;
+        return strcmp((string)($a['username'] ?? ''), (string)($b['username'] ?? ''));
+    });
+    return $users;
+}
+
+touchPresence($me_id, $me_name, $me_role, 'online');
 
 /* ═══════════════════════════════════════════════════════════════ HELPERS TYPE ══ */
 /**
@@ -67,7 +185,9 @@ function detectMediaType(string $ext, string $filename=''):string {
 }
 
 /* ════════════════════════════════════════════════════════════ AJAX ══ */
-if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) || !empty($_POST['ajax'])) {
+$isAjaxRequest = !empty($_SERVER['HTTP_X_REQUESTED_WITH']) || !empty($_POST['ajax']);
+$isMutationRequest = strtoupper((string)($_SERVER['REQUEST_METHOD'] ?? 'GET')) !== 'GET';
+if ($isAjaxRequest && $isMutationRequest) {
     header('Content-Type: application/json; charset=utf-8');
 
     $token = $_POST['csrf_token'] ?? '';
@@ -108,7 +228,63 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) || !empty($_POST['ajax'])) {
     if ($act==='get_users'){
         $st=$pdo->prepare("SELECT id,username,role FROM users WHERE id!=:me ORDER BY username LIMIT 300");
         $st->execute([':me'=>$me_id]);
-        echo json_encode(['ok'=>true,'users'=>$st->fetchAll(PDO::FETCH_ASSOC)]); exit;
+        $users = enrichUsersWithPresence($st->fetchAll(PDO::FETCH_ASSOC));
+        echo json_encode(['ok'=>true,'users'=>$users]); exit;
+    }
+
+    if ($act==='get_statuses'){
+        $st=$pdo->prepare("SELECT id,username,role FROM users WHERE id!=:me ORDER BY username LIMIT 300");
+        $st->execute([':me'=>$me_id]);
+        $users = enrichUsersWithPresence($st->fetchAll(PDO::FETCH_ASSOC));
+        echo json_encode(['ok'=>true,'statuses'=>$users,'me'=>getPresenceMap()[(string)$me_id] ?? null]); exit;
+    }
+
+    if ($act==='heartbeat_presence'){
+        $state = trim((string)($_POST['state'] ?? 'online'));
+        if (!in_array($state, ['online','away'], true)) $state = 'online';
+        touchPresence($me_id, $me_name, $me_role, $state);
+        $mePresence = getPresenceMap()[(string)$me_id] ?? null;
+        echo json_encode(['ok'=>true,'presence'=>$mePresence]); exit;
+    }
+
+    if ($act==='get_push_public_key'){
+        $vapid = webpushGetVapidConfig();
+        echo json_encode(['ok'=>true,'public_key'=>$vapid['publicKey']]); exit;
+    }
+
+    if ($act==='save_push_subscription'){
+        $raw = $_POST['subscription'] ?? '';
+        $subscription = json_decode((string)$raw, true);
+        if (!is_array($subscription)) jErr('Subscription push invalide');
+        webpushSaveSubscription($me_id, $me_name, $subscription, (string)($_SERVER['HTTP_USER_AGENT'] ?? ''));
+        echo json_encode(['ok'=>true]); exit;
+    }
+
+    if ($act==='remove_push_subscription'){
+        $endpoint = trim((string)($_POST['endpoint'] ?? ''));
+        webpushRemoveSubscription($me_id, $endpoint !== '' ? $endpoint : null);
+        echo json_encode(['ok'=>true]); exit;
+    }
+
+    if ($act==='send_test_push'){
+        $stats = webpushSendToUsers([$me_id], [
+            'title' => 'Test Web Push',
+            'body' => 'Le push VAPID fonctionne sur cette session.',
+            'tag' => 'webpush-self-test',
+            'url' => project_url('messaging/messagerie.php'),
+        ]);
+        echo json_encode(['ok'=>true,'stats'=>$stats]); exit;
+    }
+
+    if ($act==='send_test_fcm'){
+        $stats = fcmSendToUsers([$me_id], [
+            'title' => 'Test FCM',
+            'body' => 'Le backend FCM natif fonctionne sur cette session.',
+            'tag' => 'fcm-self-test',
+            'url' => project_url('messaging/messagerie.php'),
+            'unread' => 1,
+        ]);
+        echo json_encode(['ok'=>true,'stats'=>$stats]); exit;
     }
 
     /* —— MESSAGES PRIVÉS ————————————————————————————————————————————— */
@@ -140,6 +316,25 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) || !empty($_POST['ajax'])) {
         if(!$ru) jErr('Destinataire introuvable id='.$rid);
         $pdo->prepare("INSERT INTO chat_private_messages(sender_id,sender_name,recipient_id,recipient_name,content,message_type,created_at) VALUES(:sid,:sn,:rid,:rn,:c,'text',NOW())")
             ->execute([':sid'=>$me_id,':sn'=>$me_name,':rid'=>$rid,':rn'=>$ru['username'],':c'=>$txt]);
+        try {
+            webpushSendToUsers([$rid], [
+                'title' => '💬 ' . $me_name,
+                'body' => mb_strimwidth($txt, 0, 110, '…', 'UTF-8'),
+                'tag' => 'priv-'.$me_id.'-'.$rid,
+                'url' => project_url('messaging/messagerie.php'),
+                'conversation' => ['type' => 'priv', 'id' => $me_id],
+            ]);
+            fcmSendToUsers([$rid], [
+                'title' => '💬 ' . $me_name,
+                'body' => mb_strimwidth($txt, 0, 110, '…', 'UTF-8'),
+                'tag' => 'priv-'.$me_id.'-'.$rid,
+                'url' => project_url('messaging/messagerie.php'),
+                'conversation' => ['type' => 'priv', 'id' => $me_id],
+                'unread' => 1,
+            ]);
+        } catch (Throwable $e) {
+            error_log('[WEBPUSH send_message] ' . $e->getMessage());
+        }
         echo json_encode(['ok'=>true]); exit;
     }
 
@@ -178,6 +373,31 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) || !empty($_POST['ajax'])) {
         if(!$ru) jErr('Destinataire introuvable id='.$rid);
         $pdo->prepare("INSERT INTO chat_private_messages(sender_id,sender_name,recipient_id,recipient_name,content,message_type,file_path,file_name,created_at) VALUES(:sid,:sn,:rid,:rn,:c,:mt,:fp,:fn2,NOW())")
             ->execute([':sid'=>$me_id,':sn'=>$me_name,':rid'=>$rid,':rn'=>$ru['username'],':c'=>$f['name'],':mt'=>$mt,':fp'=>$wp,':fn2'=>$f['name']]);
+        try {
+            $label = match($mt) {
+                'image' => '📷 Image',
+                'audio' => '🎤 Message vocal',
+                'video' => '🎬 Vidéo',
+                default => '📎 ' . $f['name'],
+            };
+            webpushSendToUsers([$rid], [
+                'title' => '💬 ' . $me_name,
+                'body' => $label,
+                'tag' => 'priv-media-'.$me_id.'-'.$rid,
+                'url' => project_url('messaging/messagerie.php'),
+                'conversation' => ['type' => 'priv', 'id' => $me_id],
+            ]);
+            fcmSendToUsers([$rid], [
+                'title' => '💬 ' . $me_name,
+                'body' => $label,
+                'tag' => 'priv-media-'.$me_id.'-'.$rid,
+                'url' => project_url('messaging/messagerie.php'),
+                'conversation' => ['type' => 'priv', 'id' => $me_id],
+                'unread' => 1,
+            ]);
+        } catch (Throwable $e) {
+            error_log('[WEBPUSH upload_file] ' . $e->getMessage());
+        }
         echo json_encode(['ok'=>true,'path'=>$wp,'type'=>$mt]); exit;
     }
 
@@ -221,6 +441,28 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) || !empty($_POST['ajax'])) {
         $st->execute([':g'=>$gid,':me'=>$me_id]); if(!$st->fetch()) jErr('Accès refusé',403);
         $pdo->prepare("INSERT INTO chat_group_messages(group_id,sender_id,sender_name,content,message_type,created_at) VALUES(:g,:sid,:sn,:c,'text',NOW())")
             ->execute([':g'=>$gid,':sid'=>$me_id,':sn'=>$me_name,':c'=>$txt]);
+        try {
+            $st = $pdo->prepare("SELECT user_id FROM chat_group_members WHERE group_id=:g AND user_id!=:me");
+            $st->execute([':g'=>$gid, ':me'=>$me_id]);
+            $targets = array_map('intval', array_column($st->fetchAll(PDO::FETCH_ASSOC), 'user_id'));
+            webpushSendToUsers($targets, [
+                'title' => '👥 ' . $me_name,
+                'body' => mb_strimwidth($txt, 0, 110, '…', 'UTF-8'),
+                'tag' => 'group-'.$gid,
+                'url' => project_url('messaging/messagerie.php'),
+                'conversation' => ['type' => 'grp', 'id' => $gid],
+            ]);
+            fcmSendToUsers($targets, [
+                'title' => '👥 ' . $me_name,
+                'body' => mb_strimwidth($txt, 0, 110, '…', 'UTF-8'),
+                'tag' => 'group-'.$gid,
+                'url' => project_url('messaging/messagerie.php'),
+                'conversation' => ['type' => 'grp', 'id' => $gid],
+                'unread' => 1,
+            ]);
+        } catch (Throwable $e) {
+            error_log('[WEBPUSH send_group_message] ' . $e->getMessage());
+        }
         echo json_encode(['ok'=>true]); exit;
     }
     if ($act==='upload_group_file'){
@@ -247,6 +489,34 @@ if (!empty($_SERVER['HTTP_X_REQUESTED_WITH']) || !empty($_POST['ajax'])) {
         $mt = detectMediaType($ext, $f['name']);
         $pdo->prepare("INSERT INTO chat_group_messages(group_id,sender_id,sender_name,content,message_type,file_path,file_name,created_at) VALUES(:g,:sid,:sn,:c,:mt,:fp,:fn2,NOW())")
             ->execute([':g'=>$gid,':sid'=>$me_id,':sn'=>$me_name,':c'=>$f['name'],':mt'=>$mt,':fp'=>$wp,':fn2'=>$f['name']]);
+        try {
+            $st = $pdo->prepare("SELECT user_id FROM chat_group_members WHERE group_id=:g AND user_id!=:me");
+            $st->execute([':g'=>$gid, ':me'=>$me_id]);
+            $targets = array_map('intval', array_column($st->fetchAll(PDO::FETCH_ASSOC), 'user_id'));
+            $label = match($mt) {
+                'image' => '📷 Image',
+                'audio' => '🎤 Audio',
+                'video' => '🎬 Vidéo',
+                default => '📎 ' . $f['name'],
+            };
+            webpushSendToUsers($targets, [
+                'title' => '👥 ' . $me_name,
+                'body' => $label,
+                'tag' => 'group-media-'.$gid,
+                'url' => project_url('messaging/messagerie.php'),
+                'conversation' => ['type' => 'grp', 'id' => $gid],
+            ]);
+            fcmSendToUsers($targets, [
+                'title' => '👥 ' . $me_name,
+                'body' => $label,
+                'tag' => 'group-media-'.$gid,
+                'url' => project_url('messaging/messagerie.php'),
+                'conversation' => ['type' => 'grp', 'id' => $gid],
+                'unread' => 1,
+            ]);
+        } catch (Throwable $e) {
+            error_log('[WEBPUSH upload_group_file] ' . $e->getMessage());
+        }
         echo json_encode(['ok'=>true,'path'=>$wp,'type'=>$mt]); exit;
     }
     if ($act==='get_group_members'){
@@ -277,18 +547,30 @@ try {
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Messagerie | ESPERANCE H2O</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#202c33">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="application-name" content="Messagerie ESPERANCE H2O">
+<meta name="apple-mobile-web-app-title" content="Messagerie">
+<link rel="manifest" href="<?= eH(project_url('messaging/manifest.json')) ?>">
+<link rel="icon" type="image/png" sizes="192x192" href="<?= eH(project_url('hr/employee-app-icon-192.png')) ?>">
+<link rel="apple-touch-icon" href="<?= eH(project_url('hr/employee-app-icon-192.png')) ?>">
+<title>WhatsApp — ESPERANCE H2O</title>
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&family=DM+Mono:wght@500&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 <style>
 :root{
-  --wa-bg:#111b21;--wa-side:#202c33;--wa-panel:#2a3942;--wa-hover:#2a3942;
-  --wa-active:#2a3942;--wa-input:#2a3942;--wa-msg-bg:#1f2c34;
+  --wa-bg:#0b141a;--wa-side:#111b21;--wa-bar:#202c33;
+  --wa-hover:#202c33;--wa-panel:#2a3942;--wa-active:#2a3942;
   --wa-sent:#005c4b;--wa-recv:#202c33;--wa-border:#313d45;
-  --wa-green:#00a884;--wa-green2:#00cf9d;--wa-text:#e9edef;--wa-text2:#8696a0;
+  --wa-green:#00a884;--wa-green2:#00cf9d;--wa-green-dk:#025144;
+  --wa-text:#e9edef;--wa-text2:#8696a0;
   --wa-icon:#aebac1;--wa-time:#8696a0;--wa-blue:#53bdeb;--wa-red:#f15c6d;
-  --wa-gold:#ffd279;--radius:8px;
+  --wa-gold:#ffd279;
+  --wa-input:#2a3942;--wa-msg-bg:#0b141a;
+  --radius:8px;
 }
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;background:var(--wa-bg);color:var(--wa-text)}
@@ -303,6 +585,8 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
 .nav-a:hover{background:rgba(255,255,255,.05);color:var(--wa-text)}
 .nav-a.cur{background:rgba(0,168,132,.12);color:var(--wa-green)}
 .nav-a i{font-size:11px}
+.nav-install{border:none;background:rgba(0,168,132,.14);color:var(--wa-green);font:inherit;font-size:11.5px;font-weight:700;padding:7px 12px;border-radius:999px;display:none;cursor:pointer}
+.nav-install.show{display:inline-flex;align-items:center;gap:6px}
 .nav-sp{flex:1}
 .nav-user{display:flex;align-items:center;gap:8px}
 .nav-av{width:28px;height:28px;border-radius:50%;background:linear-gradient(135deg,#667eea,#764ba2);display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800;color:#fff}
@@ -332,6 +616,9 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
 .contact-av.priv{background:linear-gradient(135deg,#667eea,#764ba2)}
 .contact-av.grp{background:linear-gradient(135deg,var(--wa-green),#006a52)}
 .contact-av-txt{color:#fff}
+.presence-dot{position:absolute;right:1px;bottom:1px;width:12px;height:12px;border-radius:50%;border:2px solid var(--wa-side);background:#687781}
+.presence-dot.online{background:#22c55e;box-shadow:0 0 0 3px rgba(34,197,94,.14)}
+.presence-dot.away{background:#f59e0b}
 .contact-info{flex:1;min-width:0}
 .contact-name{font-size:14px;font-weight:700;color:var(--wa-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .contact-sub{font-size:12px;color:var(--wa-text2);margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -342,6 +629,15 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
 .btn-newgrp:hover{background:rgba(0,168,132,.12)}
 .btn-newgrp-ico{width:42px;height:42px;border-radius:50%;background:rgba(0,168,132,.15);display:flex;align-items:center;justify-content:center;font-size:16px;color:var(--wa-green)}
 .btn-newgrp-txt{font-size:13.5px;font-weight:700;color:var(--wa-green)}
+.status-card{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid rgba(255,255,255,.04)}
+.status-card.self{background:rgba(0,168,132,.06)}
+.status-card-av{width:46px;height:46px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:800;color:#fff;background:linear-gradient(135deg,#0ea5e9,#2563eb);position:relative;flex-shrink:0}
+.status-card-info{flex:1;min-width:0}
+.status-card-name{font-size:14px;font-weight:800;color:var(--wa-text);display:flex;align-items:center;gap:8px}
+.status-card-sub{font-size:12px;color:var(--wa-text2);margin-top:2px}
+.status-chip{font-size:10px;font-weight:800;padding:3px 7px;border-radius:999px;background:rgba(34,197,94,.15);color:#86efac;text-transform:uppercase;letter-spacing:.04em}
+.status-chip.away{background:rgba(245,158,11,.14);color:#fcd34d}
+.status-chip.offline{background:rgba(148,163,184,.14);color:#cbd5e1}
 .chat-main{flex:1;display:flex;flex-direction:column;background:var(--wa-msg-bg);min-width:0;position:relative}
 .chat-main::before{content:'';position:absolute;inset:0;opacity:.04;pointer-events:none;background-image:url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%2300a884' fill-opacity='1'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C%2Fg%3E%3C%2Fg%3E%3C%2Fsvg%3E")}
 .no-chat{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;text-align:center;padding:30px}
@@ -355,6 +651,7 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
 .chat-hdr-info{flex:1;min-width:0}
 .chat-hdr-name{font-size:15px;font-weight:800;color:var(--wa-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chat-hdr-sub{font-size:11.5px;color:var(--wa-text2);margin-top:1px}
+.chat-hdr-sub.online{color:#86efac}
 .chat-hdr-actions{display:flex;gap:4px}
 .hdr-btn{width:38px;height:38px;border-radius:50%;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--wa-icon);transition:background .15s;font-size:15px}
 .hdr-btn:hover{background:rgba(255,255,255,.07)}
@@ -541,6 +838,149 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
 
 /* DEBUG BAR */
 .debug-bar{background:rgba(255,210,121,.08);border-bottom:1px solid rgba(255,210,121,.15);padding:4px 12px;font-size:10px;color:var(--wa-gold);font-family:'DM Mono',monospace;flex-shrink:0}
+
+/* ── WHATSAPP MOBILE ─────────────────────────────────────────────────── */
+.wa-back-btn{display:none;width:40px;height:40px;border-radius:50%;align-items:center;justify-content:center;cursor:pointer;color:var(--wa-icon);font-size:18px;flex-shrink:0;transition:background .15s;border:none;background:none}
+.wa-back-btn:hover,.wa-back-btn:active{background:rgba(255,255,255,.1)}
+
+/* ── PANEL MORE (navigation) ──────────────────────────────────────────── */
+.panel-more-wrap{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:10px 0 20px}
+.pm-section{margin-bottom:4px}
+.pm-section-title{font-size:10px;font-weight:700;color:var(--wa-text2);text-transform:uppercase;letter-spacing:.08em;padding:10px 18px 4px}
+.pm-link{display:flex;align-items:center;gap:12px;padding:11px 18px;color:var(--wa-text);text-decoration:none;font-size:14px;font-weight:500;transition:background .15s;-webkit-tap-highlight-color:transparent}
+.pm-link:hover,.pm-link:active{background:rgba(255,255,255,.06)}
+.pm-link.cur{color:var(--wa-green)}
+.pm-link-ico{width:36px;height:36px;border-radius:50%;background:rgba(0,168,132,.13);display:flex;align-items:center;justify-content:center;font-size:15px;color:var(--wa-green);flex-shrink:0}
+.pm-link.cur .pm-link-ico{background:var(--wa-green);color:#111}
+.pm-link-label{flex:1}
+.pm-divider{height:1px;background:var(--wa-border);margin:4px 18px}
+.pm-user-card{display:flex;align-items:center;gap:12px;padding:14px 18px 10px;border-bottom:1px solid var(--wa-border);margin-bottom:4px}
+.pm-user-av{width:44px;height:44px;border-radius:50%;background:var(--wa-green);display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:700;color:#111;flex-shrink:0}
+.pm-user-name{font-size:14px;font-weight:700;color:var(--wa-text)}
+.pm-user-role{font-size:11px;color:var(--wa-text2);margin-top:2px}
+/* Bottom nav — hidden on desktop */
+.wa-bottom-nav{display:none;position:fixed;bottom:0;left:0;right:0;height:58px;background:var(--wa-bar);border-top:1.5px solid var(--wa-border);z-index:300;align-items:stretch}
+.wa-bn-wrap{position:relative;display:flex;align-items:center;justify-content:center}
+.wa-bn-item{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;cursor:pointer;color:var(--wa-text2);font-size:10px;font-weight:600;transition:color .15s;padding:6px 0;background:none;border:none;font-family:inherit;-webkit-tap-highlight-color:transparent}
+.wa-bn-item.on{color:var(--wa-green)}
+.wa-bn-item i{font-size:22px;line-height:1}
+.wa-bn-badge{position:absolute;top:-2px;right:-4px;background:var(--wa-green);color:#111;min-width:17px;height:17px;border-radius:9px;font-size:9px;font-weight:800;display:flex;align-items:center;justify-content:center;padding:0 4px;pointer-events:none}
+
+@media(max-width:768px){
+  /* ── base ── */
+  html,body{height:100%;height:100dvh;overflow:hidden}
+
+  /* ── top bar: WA style, compact ── */
+  .navbar{
+    position:fixed;top:0;left:0;right:0;
+    height:56px;padding:0 6px 0 14px;
+    background:var(--wa-bar);
+    border-bottom:1px solid var(--wa-border);
+    z-index:400;display:flex;align-items:center;
+  }
+  .navbar .nav-a,.navbar .nav-sp,.navbar .nav-info-name,.navbar .nav-info-role{display:none}
+  .navbar .nav-brand{border-right:none;padding-right:0;margin-right:0;flex:1;gap:10px}
+  .navbar .nav-brand-ico{width:34px;height:34px;font-size:14px}
+  .navbar .nav-brand-txt{font-size:17px;font-weight:800;color:var(--wa-text);letter-spacing:.01em}
+  .navbar .nav-user{flex-shrink:0}
+  .navbar .nav-av{width:34px;height:34px;font-size:12px}
+
+  /* ── main content area: fixed between top bar and bottom nav ── */
+  .wrap{
+    position:fixed;
+    top:56px;bottom:58px;
+    left:0;right:0;
+    overflow:hidden;
+    display:block;
+    height:auto;
+    background:var(--wa-bg);
+  }
+
+  /* ── sidebar: full screen ── */
+  .sidebar{
+    position:absolute;inset:0;
+    width:100%;
+    z-index:10;
+    transition:transform .26s cubic-bezier(.4,0,.2,1);
+    display:flex;flex-direction:column;
+    background:var(--wa-side);
+    border-right:none;
+  }
+  .sidebar.wa-slide-out{
+    transform:translateX(-100%);
+    pointer-events:none;
+    visibility:hidden;
+  }
+
+  /* ── chat view: slides in from right ── */
+  .chat-main{
+    position:absolute;inset:0;
+    z-index:20;
+    transform:translateX(100%);
+    transition:transform .26s cubic-bezier(.4,0,.2,1);
+    display:flex;flex-direction:column;
+    background:var(--wa-bg);
+    min-width:0;
+  }
+  .chat-main.wa-open{transform:translateX(0)}
+
+  /* ── messages area fills remaining space ── */
+  .msgs-zone{
+    flex:1;
+    padding:10px 3% 8px;
+    overflow-y:auto;
+    -webkit-overflow-scrolling:touch;
+    overscroll-behavior:contain;
+  }
+
+  /* ── input: no extra padding on mobile ── */
+  .input-zone{padding:8px 8px 10px;flex-shrink:0}
+  .input-toolbar{gap:4px}
+  .inp-btn{width:36px;height:36px;font-size:15px}
+  .inp-textarea-wrap{padding:7px 12px}
+  .send-btn{width:40px;height:40px;font-size:15px}
+
+  /* ── recording bar: cache le canvas sur mobile, boutons toujours visibles ── */
+  .rec-wave-canvas{display:none}
+  .rec-label{display:none}
+  .rec-cancel,.rec-stop{width:42px;height:42px;flex-shrink:0;font-size:16px}
+  .rec-stop{width:46px;height:46px;font-size:17px}
+  .rec-bar{gap:8px;padding:8px 12px;border-radius:28px;justify-content:space-between}
+  .rec-dot{flex-shrink:0}
+  .rec-timer{font-size:15px;flex:1;text-align:center;flex-shrink:0}
+
+  /* ── messages wider on mobile ── */
+  .msg{max-width:80%}
+  .msg-bubble{padding:6px 10px 20px}
+
+  /* ── members panel: hidden ── */
+  .mbrs-panel{display:none!important}
+
+  /* ── show mobile-only elements ── */
+  .wa-back-btn{display:flex}
+  .wa-bottom-nav{display:flex}
+
+  /* ── toast above bottom nav ── */
+  .toast{bottom:68px}
+
+  /* ── emoji picker: full width, sits above bottom nav ── */
+  .ep{width:calc(100vw - 16px);left:8px!important;right:8px!important;bottom:68px!important;top:auto!important}
+
+  /* ── no-chat screen fills properly ── */
+  .no-chat{flex:1;padding:20px}
+  .no-chat-ico{width:72px;height:72px;font-size:30px}
+  .no-chat h2{font-size:18px}
+
+  /* ── chat header ── */
+  .chat-hdr{height:56px;padding:0 4px 0 4px;gap:8px}
+  .chat-hdr-name{font-size:14px}
+  .chat-hdr-sub{font-size:11px}
+
+  /* ── sidebar header ── */
+  .sb-hdr{padding:10px 14px 6px}
+  .sb-hdr-title{font-size:17px}
+  .sb-search{padding:6px 10px}
+}
 </style>
 </head>
 <body>
@@ -555,6 +995,7 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
   <a href="<?= project_url('finance/caisse_complete_enhanced.php') ?>" class="nav-a"><i class="fas fa-cash-register"></i> Caisse</a>
   <a href="<?= project_url('documents/documents_erp_pro.php') ?>" class="nav-a"><i class="fas fa-file-alt"></i> Documents</a>
   <a href="<?= project_url('messaging/messagerie.php') ?>" class="nav-a cur"><i class="fab fa-whatsapp"></i> Messagerie</a>
+  <button class="nav-install" id="install-btn" type="button"><i class="fas fa-download"></i> Installer</button>
   <div class="nav-sp"></div>
   <div class="nav-user">
     <div class="nav-av"><?= eH(mb_substr($me_name,0,1)) ?></div>
@@ -575,6 +1016,7 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
     </div>
     <div class="sb-tabs">
       <div class="sb-tab on" data-tab="priv"><i class="fas fa-user"></i> Privé</div>
+      <div class="sb-tab" data-tab="status"><i class="fas fa-circle-dot"></i> Statuts</div>
       <div class="sb-tab" data-tab="grp"><i class="fas fa-users"></i> Groupes</div>
     </div>
     <div class="sb-search">
@@ -588,6 +1030,11 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
         <div class="loading-contacts"><div class="spinner" style="margin:0 auto 10px"></div>Chargement...</div>
       </div>
     </div>
+    <div class="sb-panel" id="panel-status">
+      <div class="sb-list" id="status-list">
+        <div class="loading-contacts"><div class="spinner" style="margin:0 auto 10px"></div>Chargement des statuts...</div>
+      </div>
+    </div>
     <div class="sb-panel" id="panel-grp">
       <div class="sb-list">
         <div class="btn-newgrp" id="btn-newgrp2">
@@ -599,6 +1046,193 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
         </div>
       </div>
     </div>
+
+    <!-- PANEL MORE : navigation complète du site -->
+    <div class="sb-panel" id="panel-more">
+      <div class="panel-more-wrap">
+        <div class="pm-user-card">
+          <div class="pm-user-av"><?= eH(mb_substr($me_name,0,1)) ?></div>
+          <div>
+            <div class="pm-user-name"><?= eH($me_name) ?></div>
+            <div class="pm-user-role"><?= eH($me_role) ?></div>
+          </div>
+        </div>
+
+        <!-- Dashboard -->
+        <div class="pm-section">
+          <div class="pm-section-title">Tableau de bord</div>
+          <a href="<?= project_url('dashboard/index.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-home"></i></div>
+            <span class="pm-link-label">Accueil</span>
+          </a>
+          <a href="<?= project_url('dashboard/admin_nasa.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-satellite"></i></div>
+            <span class="pm-link-label">Admin NASA</span>
+          </a>
+        </div>
+        <div class="pm-divider"></div>
+
+        <!-- Clients -->
+        <div class="pm-section">
+          <div class="pm-section-title">Clients</div>
+          <a href="<?= project_url('clients/clients_erp_pro.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-address-book"></i></div>
+            <span class="pm-link-label">Clients</span>
+          </a>
+        </div>
+        <div class="pm-divider"></div>
+
+        <!-- Commandes -->
+        <div class="pm-section">
+          <div class="pm-section-title">Commandes</div>
+          <a href="<?= project_url('orders/admin_orders.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-clipboard-list"></i></div>
+            <span class="pm-link-label">Gestion commandes</span>
+          </a>
+          <a href="<?= project_url('orders/commande_mobile.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-mobile-alt"></i></div>
+            <span class="pm-link-label">Commande mobile</span>
+          </a>
+          <a href="<?= project_url('orders/mes_achats.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-shopping-bag"></i></div>
+            <span class="pm-link-label">Mes achats</span>
+          </a>
+          <a href="<?= project_url('orders/create_bon_livraison.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-truck"></i></div>
+            <span class="pm-link-label">Bon de livraison</span>
+          </a>
+        </div>
+        <div class="pm-divider"></div>
+
+        <!-- Stock -->
+        <div class="pm-section">
+          <div class="pm-section-title">Stock</div>
+          <a href="<?= project_url('stock/stocks_erp_pro.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-boxes-stacked"></i></div>
+            <span class="pm-link-label">Stock</span>
+          </a>
+          <a href="<?= project_url('stock/products_erp_pro.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-barcode"></i></div>
+            <span class="pm-link-label">Produits</span>
+          </a>
+          <a href="<?= project_url('stock/stock_tracking.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-chart-line"></i></div>
+            <span class="pm-link-label">Suivi du stock</span>
+          </a>
+          <a href="<?= project_url('stock/appro_requests.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-cart-flatbed"></i></div>
+            <span class="pm-link-label">Approvisionnement</span>
+          </a>
+          <a href="<?= project_url('stock/arrivage_reception.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-dolly"></i></div>
+            <span class="pm-link-label">Arrivage / Réception</span>
+          </a>
+        </div>
+        <div class="pm-divider"></div>
+
+        <!-- Finance -->
+        <div class="pm-section">
+          <div class="pm-section-title">Finance</div>
+          <a href="<?= project_url('finance/caisse_complete_enhanced.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-cash-register"></i></div>
+            <span class="pm-link-label">Caisse</span>
+          </a>
+          <a href="<?= project_url('finance/cashier_payment_pro.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-credit-card"></i></div>
+            <span class="pm-link-label">Paiement caissier</span>
+          </a>
+          <a href="<?= project_url('finance/facture.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-file-invoice"></i></div>
+            <span class="pm-link-label">Factures</span>
+          </a>
+          <a href="<?= project_url('finance/depenses.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-receipt"></i></div>
+            <span class="pm-link-label">Dépenses</span>
+          </a>
+          <a href="<?= project_url('finance/bon.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-file-lines"></i></div>
+            <span class="pm-link-label">Bons</span>
+          </a>
+          <a href="<?= project_url('finance/versement.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-hand-holding-dollar"></i></div>
+            <span class="pm-link-label">Versements</span>
+          </a>
+          <a href="<?= project_url('finance/ticket.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-ticket"></i></div>
+            <span class="pm-link-label">Tickets</span>
+          </a>
+        </div>
+        <div class="pm-divider"></div>
+
+        <!-- Documents -->
+        <div class="pm-section">
+          <div class="pm-section-title">Documents</div>
+          <a href="<?= project_url('documents/documents_erp_pro.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-folder-open"></i></div>
+            <span class="pm-link-label">Documents</span>
+          </a>
+          <a href="<?= project_url('documents/document_upload.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-upload"></i></div>
+            <span class="pm-link-label">Envoyer un document</span>
+          </a>
+        </div>
+        <div class="pm-divider"></div>
+
+        <!-- RH -->
+        <div class="pm-section">
+          <div class="pm-section-title">Ressources humaines</div>
+          <a href="<?= project_url('hr/employees_manager.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-id-badge"></i></div>
+            <span class="pm-link-label">Employés</span>
+          </a>
+          <a href="<?= project_url('hr/attendance_rh.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-calendar-check"></i></div>
+            <span class="pm-link-label">Présences</span>
+          </a>
+          <a href="<?= project_url('hr/payroll_rh.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-money-check-dollar"></i></div>
+            <span class="pm-link-label">Paie</span>
+          </a>
+          <a href="<?= project_url('hr/employee_portal.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-user-clock"></i></div>
+            <span class="pm-link-label">Portail employé</span>
+          </a>
+        </div>
+        <div class="pm-divider"></div>
+
+        <!-- Messagerie -->
+        <div class="pm-section">
+          <div class="pm-section-title">Messagerie</div>
+          <a href="<?= project_url('messaging/messagerie.php') ?>" class="pm-link cur">
+            <div class="pm-link-ico"><i class="fab fa-whatsapp"></i></div>
+            <span class="pm-link-label">Messagerie interne</span>
+          </a>
+          <a href="<?= project_url('messaging/visioconference.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-video"></i></div>
+            <span class="pm-link-label">Visioconférence</span>
+          </a>
+          <a href="<?= project_url('messaging/whatsapp_messagerie_ultra_pro.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-comments"></i></div>
+            <span class="pm-link-label">WhatsApp Pro</span>
+          </a>
+        </div>
+        <div class="pm-divider"></div>
+
+        <!-- Compte -->
+        <div class="pm-section">
+          <div class="pm-section-title">Mon compte</div>
+          <a href="<?= project_url('auth/profile.php') ?>" class="pm-link">
+            <div class="pm-link-ico"><i class="fas fa-user-gear"></i></div>
+            <span class="pm-link-label">Mon profil</span>
+          </a>
+          <a href="<?= project_url('auth/logout.php') ?>" class="pm-link" style="color:#f15c6d">
+            <div class="pm-link-ico" style="background:rgba(241,92,109,.13);color:#f15c6d"><i class="fas fa-right-from-bracket"></i></div>
+            <span class="pm-link-label">Déconnexion</span>
+          </a>
+        </div>
+      </div>
+    </div>
+
   </div>
 
   <!-- CHAT MAIN -->
@@ -611,6 +1245,7 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
     </div>
 
     <div class="chat-hdr" id="chat-hdr" style="display:none">
+      <button class="wa-back-btn" id="wa-back-btn" onclick="closeChatMobile()" title="Retour"><i class="fas fa-arrow-left"></i></button>
       <div class="chat-hdr-av" id="hdr-av"></div>
       <div class="chat-hdr-info">
         <div class="chat-hdr-name" id="hdr-name"></div>
@@ -725,12 +1360,38 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
 <!-- TOAST -->
 <div class="toast" id="toast"></div>
 
+<!-- WHATSAPP BOTTOM NAV (mobile only) -->
+<nav class="wa-bottom-nav" id="wa-bottom-nav" role="navigation">
+  <button class="wa-bn-item on" id="wa-bn-chats" onclick="waNavSwitch('chats',this)">
+    <div class="wa-bn-wrap">
+      <i class="fas fa-comment"></i>
+      <span id="wa-bn-chats-badge" class="wa-bn-badge" style="display:none"></span>
+    </div>
+    Chats
+  </button>
+  <button class="wa-bn-item" id="wa-bn-status" onclick="waNavSwitch('status',this)">
+    <div class="wa-bn-wrap"><i class="fas fa-circle-dot"></i></div>
+    Statuts
+  </button>
+  <button class="wa-bn-item" id="wa-bn-groups" onclick="waNavSwitch('groups',this)">
+    <div class="wa-bn-wrap"><i class="fas fa-users"></i></div>
+    Groupes
+  </button>
+  <button class="wa-bn-item" id="wa-bn-more" onclick="waNavSwitch('more',this)">
+    <div class="wa-bn-wrap"><i class="fas fa-ellipsis-vertical"></i></div>
+    Plus
+  </button>
+</nav>
+
 <script>
 'use strict';
 const CSRF    = <?= json_encode($csrf) ?>;
 const ME_ID   = <?= json_encode($me_id) ?>;
 const ME_NAME = <?= json_encode($me_name) ?>;
 const API_URL = <?= json_encode($_SERVER['PHP_SELF']) ?>;
+const MEDIA_PROXY = <?= json_encode(project_url('messaging/chat_media.php')) ?>;
+const SW_URL = <?= json_encode(project_url('messaging/sw.js')) ?>;
+const SW_SCOPE = <?= json_encode(rtrim(project_url('messaging'), '/').'/') ?>;
 
 let current   = null;
 let pollTimer = null;
@@ -738,6 +1399,11 @@ let lastCount = 0;
 let allUsers  = [];
 let allGroups = [];
 let pendingFile = null;
+let presenceMap = {};
+let myPresence = null;
+let notifPermission = false;
+let swReg = null;
+let deferredInstallPrompt = null;
 
 const RC = {admin:'#f15c6d',developer:'#a78bfa',manager:'#ffd279',
   staff:'#00a884',employee:'#53bdeb',Patron:'#f15c6d',PDG:'#f15c6d',
@@ -747,6 +1413,40 @@ function rc(r){ return RC[r]||'#8696a0'; }
 function esc(s){ const d=document.createElement('div'); d.textContent=String(s??''); return d.innerHTML; }
 function q(sel){ return document.querySelector(sel); }
 function fmt(sec){ sec=Math.floor(sec||0); return Math.floor(sec/60)+':'+(sec%60<10?'0':'')+sec%60; }
+function b64UrlToUint8Array(base64String){
+  const padding='='.repeat((4 - base64String.length % 4) % 4);
+  const base64=(base64String + padding).replace(/-/g,'+').replace(/_/g,'/');
+  const raw=atob(base64);
+  return Uint8Array.from([...raw].map(ch=>ch.charCodeAt(0)));
+}
+function relTime(ts){
+  if(!ts) return 'Jamais vu';
+  const diff=Math.max(0, Math.floor(Date.now()/1000)-Number(ts||0));
+  if(diff<10) return 'À l’instant';
+  if(diff<60) return `il y a ${diff}s`;
+  if(diff<3600) return `il y a ${Math.floor(diff/60)} min`;
+  if(diff<86400) return `il y a ${Math.floor(diff/3600)} h`;
+  return `il y a ${Math.floor(diff/86400)} j`;
+}
+function presenceLabel(user){
+  if(!user) return 'Hors ligne';
+  if(user.status_state==='online') return 'En ligne';
+  if(user.status_state==='away') return 'Absent';
+  return `Vu ${relTime(user.last_seen)}`;
+}
+function presenceDotClass(user){
+  return user?.status_state || 'offline';
+}
+// Convertit un chemin relatif DB (uploads/chat/...) en URL servie par le proxy PHP.
+function furl(p, download=false){
+  if(!p) return '';
+  if(p.startsWith('http://')||p.startsWith('https://')) return p;
+  const normalized = p.startsWith('/') ? p.slice(1) : p;
+  const url = new URL(MEDIA_PROXY, window.location.origin);
+  url.searchParams.set('path', normalized);
+  if(download) url.searchParams.set('download', '1');
+  return url.toString();
+}
 
 function toast(msg, ok=true, duration=null){
   const el=q('#toast');
@@ -826,7 +1526,9 @@ document.querySelectorAll('.sb-tab').forEach(tab=>{
     document.querySelectorAll('.sb-tab').forEach(x=>x.classList.toggle('on',x.dataset.tab===t));
     document.querySelectorAll('.sb-panel').forEach(x=>x.classList.toggle('on',x.id==='panel-'+t));
     q('#sb-search-inp').value='';
-    if(t==='priv') renderUsers(allUsers); else renderGroups(allGroups);
+    if(t==='priv') renderUsers(allUsers);
+    else if(t==='status') renderStatusList('');
+    else renderGroups(allGroups);
   });
 });
 
@@ -834,6 +1536,7 @@ q('#sb-search-inp').addEventListener('input',function(){
   const v=this.value.toLowerCase().trim();
   const activeTab=q('.sb-tab.on')?.dataset.tab;
   if(activeTab==='priv') renderUsers(v?allUsers.filter(u=>(u.username||'').toLowerCase().includes(v)):allUsers);
+  else if(activeTab==='status') renderStatusList(v);
   else renderGroups(v?allGroups.filter(g=>(g.name||'').toLowerCase().includes(v)):allGroups);
 });
 
@@ -843,7 +1546,9 @@ async function loadUsers(){
     const d=await api({ajax:'get_users'});
     if(!d.ok){ q('#users-list').innerHTML=`<div class="err-panel" style="margin:8px">${esc(d.err)}</div>`; return; }
     allUsers=d.users;
+    presenceMap = Object.fromEntries(allUsers.map(u=>[String(u.id), u]));
     renderUsers(allUsers);
+    renderStatuses();
     pollUnread();
   } catch(e){
     q('#users-list').innerHTML=`<div class="err-panel" style="margin:8px"><div class="err-title"><i class="fas fa-wifi"></i> Erreur réseau</div>${esc(e.message)}</div>`;
@@ -857,17 +1562,55 @@ function renderUsers(users){
     const ini=(u.username||'?')[0].toUpperCase();
     const c=rc(u.role);
     const isActive=current?.type==='priv'&&current?.id==u.id;
+    const sub = presenceLabel(u);
     return `<div class="contact${isActive?' active':''}" data-type="priv" data-id="${u.id}" data-name="${esc(u.username)}" data-role="${esc(u.role||'')}">
-      <div class="contact-av priv"><span class="contact-av-txt">${ini}</span></div>
+      <div class="contact-av priv"><span class="contact-av-txt">${ini}</span><span class="presence-dot ${presenceDotClass(u)}"></span></div>
       <div class="contact-info">
         <div class="contact-name">${esc(u.username)} <span class="role-chip" style="background:${c}22;color:${c}">${esc(u.role||'')}</span></div>
-        <div class="contact-sub">Cliquez pour discuter</div>
+        <div class="contact-sub">${esc(sub)}</div>
       </div>
       <div class="contact-meta">
         <div class="unread-pill" id="ub-${u.id}" style="display:none"></div>
       </div>
     </div>`;
   }).join('');
+}
+
+function renderStatuses(){
+  renderStatusList('');
+}
+
+function renderStatusList(filterText=''){
+  const el=q('#status-list');
+  if(!el) return;
+  const qf=(filterText||'').toLowerCase().trim();
+  const users=[...allUsers].filter(u=>{
+    if(!qf) return true;
+    return (u.username||'').toLowerCase().includes(qf) || (u.role||'').toLowerCase().includes(qf);
+  });
+  const onlineCount=users.filter(u=>u.is_online).length;
+  const meState = myPresence?.status_state || 'online';
+  const meText = meState==='away' ? 'Session ouverte, onglet inactif' : 'Session active sur cette page';
+  el.innerHTML = `
+    <div class="status-card self">
+      <div class="status-card-av">${esc((ME_NAME||'?')[0].toUpperCase())}<span class="presence-dot ${esc(meState)}"></span></div>
+      <div class="status-card-info">
+        <div class="status-card-name">Ma session <span class="status-chip ${meState==='away'?'away':''}">${meState==='away'?'Absent':'Actif'}</span></div>
+        <div class="status-card-sub">${esc(meText)}</div>
+      </div>
+    </div>
+    ${users.length ? users.map(u=>`
+      <div class="status-card">
+        <div class="status-card-av">${esc((u.username||'?')[0].toUpperCase())}<span class="presence-dot ${presenceDotClass(u)}"></span></div>
+        <div class="status-card-info">
+          <div class="status-card-name">${esc(u.username)} <span class="status-chip ${u.status_state==='away'?'away':(u.status_state==='offline'?'offline':'')}">${u.status_state==='away'?'Absent':(u.status_state==='offline'?'Hors ligne':'En ligne')}</span></div>
+          <div class="status-card-sub">${esc(u.role||'')} • ${esc(presenceLabel(u))}</div>
+        </div>
+      </div>
+    `).join('') : `<div style="padding:20px;text-align:center;color:var(--wa-text2);font-size:12px">Aucun statut disponible</div>`}
+  `;
+  const title = document.querySelector('.sb-tab[data-tab="status"]');
+  if(title) title.title = `${onlineCount} utilisateur(s) en ligne`;
 }
 
 /* ── LOAD GROUPS ─────────────────────────────────────────────────────── */
@@ -923,16 +1666,19 @@ function openChat(type,id,name,role,memberCount){
 
   const av=q('#hdr-av'), mb=q('#hdr-members-btn');
   if(type==='priv'){
+    const user = presenceMap[String(id)] || {id,name,role};
     av.className='chat-hdr-av priv';
     av.innerHTML=`<span style="color:#fff;font-size:16px;font-weight:800">${name[0].toUpperCase()}</span>`;
     q('#hdr-name').textContent=name;
-    q('#hdr-sub').textContent=role||'Employé';
+    q('#hdr-sub').textContent=presenceLabel(user);
+    q('#hdr-sub').classList.toggle('online', !!user.is_online);
     mb.style.display='none';
   } else {
     av.className='chat-hdr-av grp';
     av.innerHTML=`<i class="fas fa-users" style="font-size:13px"></i>`;
     q('#hdr-name').textContent=name;
     q('#hdr-sub').textContent=`${memberCount} membre${memberCount>1?'s':''}`;
+    q('#hdr-sub').classList.remove('online');
     mb.style.display='flex';
     loadGroupMembers(id);
   }
@@ -944,6 +1690,7 @@ function openChat(type,id,name,role,memberCount){
   fetchMessages().then(()=>{
     pollTimer=setInterval(()=>{ if(!document.hidden) fetchMessages(); },3000);
   });
+  openChatMobile();
 }
 
 /* ── FETCH MESSAGES ──────────────────────────────────────────────────── */
@@ -1046,30 +1793,32 @@ function buildMsgHTML(m){
     inner=`<div class="msg-text">${esc(m.content)}</div>`;
 
   } else if(type==='image'){
-    const src=esc(m.file_path||'');
-    inner=`<div class="msg-img-wrap" onclick="openLightbox('${src}')">
-      <img src="${src}" alt="${esc(m.file_name||'image')}" loading="lazy">
+    const src=furl(m.file_path||'');
+    inner=`<div class="msg-img-wrap" onclick="openLightbox('${esc(src)}')">
+      <img src="${esc(src)}" alt="${esc(m.file_name||'image')}" loading="lazy">
       <div class="dl-overlay"><i class="fas fa-download"></i></div>
     </div>`;
 
   } else if(type==='audio'){
-    inner=`<div class="msg-audio" data-src="${esc(m.file_path||'')}">
+    const src=furl(m.file_path||'');
+    const fname=m.file_name||'';
+    const aext=fname.split('.').pop().toLowerCase();
+    const amime={'webm':'audio/webm','ogg':'audio/ogg','mp3':'audio/mpeg','wav':'audio/wav','m4a':'audio/mp4','aac':'audio/aac'}[aext]||'audio/webm';
+    inner=`<div class="msg-audio" data-src="${esc(src)}" data-mime="${esc(amime)}">
       <button class="audio-play-btn" title="Lecture"><i class="fas fa-play"></i></button>
       <div class="audio-waveform"><canvas width="160" height="28"></canvas></div>
       <span class="audio-duration">0:00</span>
     </div>`;
 
   } else if(type==='video'){
-    // FIX: Player vidéo intégré — fonctionne avec mp4, webm, mov, etc.
-    const src=esc(m.file_path||'');
+    const src=furl(m.file_path||'');
     const fname = m.file_name || '';
-    // Déterminer le type MIME pour la source vidéo
     const ext = fname.split('.').pop().toLowerCase();
     const mimeMap = {'mp4':'video/mp4','webm':'video/webm','ogg':'video/ogg','mov':'video/mp4','mkv':'video/webm','avi':'video/x-msvideo'};
     const mime = mimeMap[ext] || 'video/mp4';
-    inner=`<div class="msg-video-wrap" data-src="${src}">
+    inner=`<div class="msg-video-wrap" data-src="${esc(src)}">
       <video preload="metadata" style="width:100%;max-height:240px;border-radius:8px;display:block">
-        <source src="${src}" type="${esc(mime)}">
+        <source src="${esc(src)}" type="${esc(mime)}">
         Votre navigateur ne supporte pas la lecture vidéo.
       </video>
       <div class="video-thumb-overlay" onclick="this.style.display='none';this.previousElementSibling.play();this.nextElementSibling.style.opacity=1">
@@ -1086,12 +1835,13 @@ function buildMsgHTML(m){
     </div>`;
 
   } else {
+    const src=furl(m.file_path||'');
     const icon=getFileIcon(m.file_name||'');
     inner=`<div class="msg-file">
       <div class="file-ico"><i class="fas ${icon}"></i></div>
       <div>
         <span class="file-info-name" title="${esc(m.file_name||m.content||'')}">${esc(m.file_name||m.content||'Fichier')}</span>
-        <a class="file-info-dl" href="${esc(m.file_path||'')}" download="${esc(m.file_name||'')}"><i class="fas fa-download"></i> Télécharger</a>
+        <a class="file-info-dl" href="${esc(furl(m.file_path||'', true))}" download="${esc(m.file_name||'')}"><i class="fas fa-download"></i> Télécharger</a>
       </div>
     </div>`;
   }
@@ -1148,24 +1898,100 @@ function initVideoPlayer(wrap){
 
 /* ── AUDIO PLAYER ────────────────────────────────────────────────────── */
 function initAudioPlayer(el){
+  if(el.dataset.ready === '1') return;
+  el.dataset.ready = '1';
+
   const src=el.dataset.src;
+  const mime=el.dataset.mime||'audio/webm';
   const playBtn=el.querySelector('.audio-play-btn');
   const canvas=el.querySelector('canvas');
   const durEl=el.querySelector('.audio-duration');
   const ctx=canvas.getContext('2d');
-  const audio=new Audio(src);
+
+  // Créer l'élément audio avec la source et le type MIME explicite
+  const audio=document.createElement('audio');
+  audio.preload='metadata';
+  const src_el=document.createElement('source');
+  src_el.src=src;
+  src_el.type=mime;
+  audio.appendChild(src_el);
+
   let playing=false;
+  let waveformBars=null;
 
   drawStaticWave(ctx,canvas);
+  loadRealWaveform(src,mime).then(bars=>{
+    if(!bars || !bars.length) return;
+    waveformBars=bars;
+    drawWaveBars(ctx,canvas,waveformBars,0);
+  }).catch(()=>{});
   audio.addEventListener('loadedmetadata',()=>{ durEl.textContent=fmt(audio.duration||0); });
-  audio.addEventListener('ended',()=>{ playing=false; playBtn.innerHTML='<i class="fas fa-play"></i>'; drawStaticWave(ctx,canvas); });
-  audio.addEventListener('timeupdate',()=>{ durEl.textContent=fmt(audio.currentTime); drawProgress(ctx,canvas,audio.currentTime/(audio.duration||1)); });
+  audio.addEventListener('ended',()=>{
+    playing=false;
+    playBtn.innerHTML='<i class="fas fa-play"></i>';
+    if(waveformBars) drawWaveBars(ctx,canvas,waveformBars,0);
+    else drawStaticWave(ctx,canvas);
+  });
+  audio.addEventListener('timeupdate',()=>{
+    durEl.textContent=fmt(audio.currentTime);
+    const progress=audio.currentTime/(audio.duration||1);
+    if(waveformBars) drawWaveBars(ctx,canvas,waveformBars,progress);
+    else drawProgress(ctx,canvas,progress);
+  });
+  audio.addEventListener('error',()=>{
+    const err=audio.error;
+    const codes={1:'ABORTED',2:'NETWORK',3:'DECODE',4:'FORMAT'};
+    toast('Audio: '+(codes[err?.code]||'erreur')+' — '+src.split('/').pop(), false, 6000);
+  });
 
   playBtn.addEventListener('click',()=>{
     if(playing){ audio.pause(); playing=false; playBtn.innerHTML='<i class="fas fa-play"></i>'; }
-    else { audio.play().catch(e=>toast('Lecture impossible: '+e.message,false)); playing=true; playBtn.innerHTML='<i class="fas fa-pause"></i>'; }
+    else { audio.play().catch(e=>toast('Lecture: '+e.message,false)); playing=true; playBtn.innerHTML='<i class="fas fa-pause"></i>'; }
   });
   canvas.addEventListener('click',e=>{ const r=canvas.getBoundingClientRect(); audio.currentTime=(e.clientX-r.left)/r.width*(audio.duration||0); });
+}
+
+async function loadRealWaveform(src, mime){
+  if(!window.AudioContext && !window.webkitAudioContext) return null;
+  const res = await fetch(src);
+  if(!res.ok) return null;
+  const buf = await res.arrayBuffer();
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  const ac = new AudioCtx();
+  try {
+    const decoded = await ac.decodeAudioData(buf.slice(0));
+    const raw = decoded.getChannelData(0);
+    const bars = 48;
+    const block = Math.max(1, Math.floor(raw.length / bars));
+    const peaks = [];
+    for(let i=0; i<bars; i++){
+      const start = i * block;
+      const end = Math.min(raw.length, start + block);
+      let sum = 0;
+      for(let j=start; j<end; j++) sum += Math.abs(raw[j]);
+      peaks.push(end > start ? sum / (end - start) : 0);
+    }
+    const max = Math.max(...peaks, 0.01);
+    return peaks.map(v=>Math.max(0.08, v / max));
+  } finally {
+    if(ac.state !== 'closed') ac.close().catch(()=>{});
+  }
+}
+
+function drawWaveBars(ctx, canvas, bars, progress=0){
+  const W=canvas.width||160, H=canvas.height||28;
+  ctx.clearRect(0,0,W,H);
+  const count=bars.length||32;
+  const gap=2;
+  const bw=Math.max(2, (W - gap*(count-1)) / count);
+  bars.forEach((level, i)=>{
+    const x=i*(bw+gap);
+    const h=Math.max(3, level * H * 0.9);
+    ctx.fillStyle=((i+1)/count)<=progress ? '#00a884' : 'rgba(134,150,160,.4)';
+    ctx.beginPath();
+    ctx.roundRect(x, (H-h)/2, bw, h, 1);
+    ctx.fill();
+  });
 }
 
 function drawStaticWave(ctx,canvas){
@@ -1647,21 +2473,128 @@ async function loadGroupMembers(gid){
 
 /* ── UNREAD & NOTIFS ─────────────────────────────────────────────────── */
 let prevUnread = {};
-let notifPermission = false;
 
 function requestNotifPermission(){
-  if('Notification' in window && Notification.permission==='default'){
-    Notification.requestPermission().then(p=>{ notifPermission=(p==='granted'); if(notifPermission) toast('🔔 Notifications activées !'); });
-  } else if(Notification.permission==='granted'){ notifPermission=true; }
+  if(!('Notification' in window)) return;
+  if(Notification.permission==='default'){
+    Notification.requestPermission().then(async p=>{
+      notifPermission=(p==='granted');
+      if(notifPermission){
+        await ensurePushSubscription();
+        toast('Notifications activées');
+      }
+    });
+  } else if(Notification.permission==='granted'){
+    notifPermission=true;
+    ensurePushSubscription();
+  }
 }
 
-function sendBrowserNotif(title, body){
-  if(!notifPermission||document.hasFocus()) return;
-  try { const n=new Notification(title,{body,tag:'chat-'+title}); setTimeout(()=>n.close(),5000); n.onclick=()=>{window.focus();n.close();}; } catch(e){}
+async function ensureServiceWorker(){
+  if(!('serviceWorker' in navigator)) return null;
+  if(swReg) return swReg;
+  try {
+    await navigator.serviceWorker.register(SW_URL, {scope:SW_SCOPE});
+    swReg = await navigator.serviceWorker.ready;
+  } catch(e) {
+    try {
+      await navigator.serviceWorker.register(SW_URL);
+      swReg = await navigator.serviceWorker.ready;
+    } catch(err) {
+      console.warn('[SW register]', err.message);
+      return null;
+    }
+  }
+  return swReg;
+}
+
+async function ensurePushSubscription(){
+  if(!window.isSecureContext){
+    console.warn('[Push] Contexte non sécurisé. HTTPS requis pour Web Push.');
+    return null;
+  }
+  if(!('serviceWorker' in navigator) || !('PushManager' in window)) return null;
+  const reg = await ensureServiceWorker();
+  if(!reg) return null;
+  const cfg = await api({ajax:'get_push_public_key'});
+  if(!cfg.ok || !cfg.public_key) return null;
+  let sub = await reg.pushManager.getSubscription();
+  if(!sub){
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: b64UrlToUint8Array(cfg.public_key)
+    });
+  }
+  await api({ajax:'save_push_subscription', subscription: JSON.stringify(sub.toJSON())});
+  return sub;
+}
+
+async function showRealNotification(title, body, unread=0){
+  const pageVisible = document.visibilityState === 'visible' && document.hasFocus();
+  if(!notifPermission || pageVisible) return;
+  const reg = await ensureServiceWorker();
+  if(reg?.active){
+    reg.active.postMessage({
+      type:'SHOW_NOTIFICATION',
+      title,
+      body,
+      unread,
+      tag:'chat-unread-'+title,
+      url:window.location.href
+    });
+    return;
+  }
+  try {
+    const n=new Notification(title,{body,tag:'chat-'+title});
+    setTimeout(()=>n.close(),5000);
+    n.onclick=()=>{window.focus();n.close();};
+  } catch(e){}
+}
+
+async function updateAppBadge(totalUnread){
+  if('setAppBadge' in navigator){
+    try {
+      if(totalUnread>0) await navigator.setAppBadge(totalUnread);
+      else if('clearAppBadge' in navigator) await navigator.clearAppBadge();
+    } catch(e){}
+  }
+  const reg = await ensureServiceWorker();
+  if(reg?.active){
+    reg.active.postMessage({type:'SET_BADGE', unread:totalUnread});
+  }
+}
+
+function setupInstallPrompt(){
+  window.addEventListener('beforeinstallprompt', e=>{
+    e.preventDefault();
+    deferredInstallPrompt = e;
+    q('#install-btn')?.classList.add('show');
+  });
+  q('#install-btn')?.addEventListener('click', async ()=>{
+    if(!deferredInstallPrompt) return;
+    deferredInstallPrompt.prompt();
+    const result = await deferredInstallPrompt.userChoice.catch(()=>null);
+    if(result?.outcome === 'accepted'){
+      q('#install-btn')?.classList.remove('show');
+    }
+    deferredInstallPrompt = null;
+  });
+  window.addEventListener('appinstalled', ()=>{
+    deferredInstallPrompt = null;
+    q('#install-btn')?.classList.remove('show');
+    toast('Application installée');
+  });
 }
 
 function updateTabTitle(totalUnread){
   document.title=(totalUnread>0?'('+totalUnread+') ':'')+' Messagerie | ESPERANCE H2O';
+  // Sync bottom nav badge
+  const badge=document.getElementById('wa-bn-chats-badge');
+  if(badge){
+    if(totalUnread>0){ badge.textContent=totalUnread>99?'99+':totalUnread; badge.style.display='flex'; }
+    else badge.style.display='none';
+  }
+  updateAppBadge(totalUnread);
 }
 
 async function pollUnread(){
@@ -1678,12 +2611,45 @@ async function pollUnread(){
       const prev=prevUnread[uid]||0;
       if(c>prev && !(current?.type==='priv' && String(current.id)===String(uid))){
         const usr=allUsers.find(u=>String(u.id)===String(uid));
-        sendBrowserNotif('💬 '+(usr?usr.username:'Nouveau message'), c+' message'+(c>1?'s':''));
+        showRealNotification('💬 '+(usr?usr.username:'Nouveau message'), c+' message'+(c>1?'s':''), totalUnread);
       }
     });
     prevUnread={...d.unread};
     updateTabTitle(totalUnread);
   } catch(e){ console.warn('[pollUnread]',e.message); }
+}
+
+async function heartbeatPresence(state='online'){
+  try {
+    const d = await api({ajax:'heartbeat_presence', state});
+    if(d.ok){
+      myPresence = d.presence || null;
+    }
+  } catch(e){
+    console.warn('[heartbeatPresence]', e.message);
+  }
+}
+
+async function refreshStatuses(){
+  try {
+    const d = await api({ajax:'get_statuses'});
+    if(!d.ok) return;
+    myPresence = d.me || myPresence;
+    allUsers = d.statuses || allUsers;
+    presenceMap = Object.fromEntries(allUsers.map(u=>[String(u.id), u]));
+    const activeTab=q('.sb-tab.on')?.dataset.tab;
+    if(activeTab==='priv') renderUsers(allUsers);
+    if(activeTab==='status') renderStatusList(q('#sb-search-inp').value || '');
+    if(current?.type==='priv'){
+      const user = presenceMap[String(current.id)];
+      if(user){
+        q('#hdr-sub').textContent=presenceLabel(user);
+        q('#hdr-sub').classList.toggle('online', !!user.is_online);
+      }
+    }
+  } catch(e){
+    console.warn('[refreshStatuses]', e.message);
+  }
 }
 
 /* ── LIGHTBOX ────────────────────────────────────────────────────────── */
@@ -1696,15 +2662,97 @@ q('#lightbox').addEventListener('click',e=>{
     q('#lightbox').classList.remove('show');
 });
 
+/* ── MOBILE NAV ──────────────────────────────────────────────────────── */
+function isMobile(){ return window.innerWidth<=768; }
+function openChatMobile(){
+  if(!isMobile()) return;
+  document.querySelector('.sidebar').classList.add('wa-slide-out');
+  document.querySelector('.chat-main').classList.add('wa-open');
+}
+function closeChatMobile(){
+  document.querySelector('.sidebar').classList.remove('wa-slide-out');
+  document.querySelector('.chat-main').classList.remove('wa-open');
+  if(pollTimer){ clearInterval(pollTimer); pollTimer=null; }
+  current=null;
+  // reset no-chat area
+  if(q('#chat-hdr')) q('#chat-hdr').style.display='none';
+  if(q('#msgs-zone')) q('#msgs-zone').style.display='none';
+  if(q('#input-zone')) q('#input-zone').style.display='none';
+  if(q('#no-chat')) q('#no-chat').style.display='flex';
+}
+function waNavSwitch(tab, el){
+  document.querySelectorAll('.wa-bn-item').forEach(b=>b.classList.remove('on'));
+  el.classList.add('on');
+  if(tab==='chats'){
+    // show private chats panel
+    document.querySelectorAll('.sb-tab').forEach(t=>t.classList.remove('on'));
+    const privTab=document.querySelector('.sb-tab[data-tab="priv"]');
+    if(privTab) privTab.classList.add('on');
+    document.querySelectorAll('.sb-panel').forEach(p=>p.classList.remove('on'));
+    const privPanel=document.getElementById('panel-priv');
+    if(privPanel) privPanel.classList.add('on');
+  } else if(tab==='status'){
+    document.querySelectorAll('.sb-tab').forEach(t=>t.classList.remove('on'));
+    const stTab=document.querySelector('.sb-tab[data-tab="status"]');
+    if(stTab) stTab.classList.add('on');
+    document.querySelectorAll('.sb-panel').forEach(p=>p.classList.remove('on'));
+    const stPanel=document.getElementById('panel-status');
+    if(stPanel) stPanel.classList.add('on');
+    renderStatusList(q('#sb-search-inp').value || '');
+  } else if(tab==='groups'){
+    // show group chats panel
+    document.querySelectorAll('.sb-tab').forEach(t=>t.classList.remove('on'));
+    const grpTab=document.querySelector('.sb-tab[data-tab="grp"]');
+    if(grpTab) grpTab.classList.add('on');
+    document.querySelectorAll('.sb-panel').forEach(p=>p.classList.remove('on'));
+    const grpPanel=document.getElementById('panel-grp');
+    if(grpPanel) grpPanel.classList.add('on');
+  } else if(tab==='more'){
+    // show site navigation panel
+    document.querySelectorAll('.sb-tab').forEach(t=>t.classList.remove('on'));
+    document.querySelectorAll('.sb-panel').forEach(p=>p.classList.remove('on'));
+    const morePanel=document.getElementById('panel-more');
+    if(morePanel) morePanel.classList.add('on');
+    // show sidebar if hidden
+    const sidebar=document.querySelector('.sidebar');
+    if(sidebar) sidebar.classList.remove('wa-slide-out');
+    const chatMain=document.querySelector('.chat-main');
+    if(chatMain) chatMain.classList.remove('wa-open');
+  }
+}
+
 /* ── INIT ────────────────────────────────────────────────────────────── */
 console.log('[CHAT] Init — ME_ID='+ME_ID+' API='+API_URL);
+ensureServiceWorker();
+setupInstallPrompt();
 requestNotifPermission();
 initEmoji();
+heartbeatPresence('online');
 loadUsers();
 loadGroups();
+setInterval(()=>{ if(!document.hidden) { heartbeatPresence('online'); pollUnread(); refreshStatuses(); } },15000);
 setInterval(()=>{ if(!document.hidden) pollUnread(); },5000);
+setInterval(()=>{
+  if(document.hidden && notifPermission){
+    pollUnread();
+  }
+},10000);
 runDiag();
 document.addEventListener('click', requestNotifPermission, {once:true});
+document.addEventListener('visibilitychange',()=>{
+  heartbeatPresence(document.hidden ? 'away' : 'online');
+  if(!document.hidden) refreshStatuses();
+});
+window.addEventListener('focus',()=>heartbeatPresence('online'));
+window.addEventListener('beforeunload',()=>{
+  try {
+    const fd = new FormData();
+    fd.append('ajax','heartbeat_presence');
+    fd.append('state','away');
+    fd.append('csrf_token', CSRF);
+    navigator.sendBeacon(API_URL, fd);
+  } catch(e){}
+});
 </script>
 </body>
 </html>

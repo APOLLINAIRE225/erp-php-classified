@@ -676,11 +676,11 @@ $cash_balance = $cash_in - $cash_out;
 <style>
 @font-face{font-family:'C059';src:local('C059-Bold'),local('C059 Bold'),local('Century Schoolbook');font-weight:700 900}
 :root{
-  --bg:#04090e;--surf:#081420;--card:#0d1e2c;--card2:#122030;
-  --bord:rgba(50,190,143,.16);
-  --neon:#32be8f;--red:#ff3553;--orange:#ff9140;--blue:#3d8cff;
-  --gold:#ffd060;--purple:#a855f7;--cyan:#06b6d4;
-  --text:#e0f2ea;--text2:#b8d8cc;--muted:#5a8070;
+  --bg:#0f1726;--surf:#162033;--card:#1b263b;--card2:#22324a;
+  --bord:rgba(148,163,184,0.18);
+  --neon:#00a86b;--red:#e53935;--orange:#f57c00;--blue:#1976d2;
+  --gold:#f9a825;--purple:#a855f7;--cyan:#06b6d4;
+  --text:#e8eef8;--text2:#bfd0e4;--muted:#8ea3bd;
   --glow:0 0 26px rgba(50,190,143,.45);--glow-r:0 0 26px rgba(255,53,83,.45);
   --glow-gold:0 0 26px rgba(255,208,96,.4);--glow-cyan:0 0 26px rgba(6,182,212,.4);
   --glow-purple:0 0 26px rgba(168,85,247,.4);
@@ -747,7 +747,7 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
 .search-input-big:focus{outline:none;border-color:var(--purple);box-shadow:var(--glow-purple);background:rgba(168,85,247,.06)}
 .f-select{width:100%;padding:12px 16px;background:rgba(0,0,0,.3);border:1.5px solid var(--bord);border-radius:12px;color:var(--text);font-family:var(--fb);font-size:14px;font-weight:600;margin-bottom:14px;transition:all .3s;appearance:none;-webkit-appearance:none}
 .f-select:focus{outline:none;border-color:var(--purple);box-shadow:var(--glow-purple)}
-.f-select option{background:#0d1e2c}
+.f-select option{background:#1b263b}
 .f-select:disabled{opacity:.35;cursor:not-allowed}
 .btn-search{padding:14px 28px;border-radius:14px;border:none;background:linear-gradient(135deg,var(--purple),var(--blue));color:#fff;font-family:var(--fh);font-size:15px;font-weight:900;cursor:pointer;box-shadow:var(--glow-purple);transition:all .3s;display:flex;align-items:center;gap:8px;white-space:nowrap}
 .btn-search:hover{transform:translateY(-2px);box-shadow:0 8px 24px rgba(168,85,247,.5)}

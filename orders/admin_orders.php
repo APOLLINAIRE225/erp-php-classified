@@ -38,6 +38,40 @@ try {
         client_name VARCHAR(200) DEFAULT NULL, amount DECIMAL(12,2) DEFAULT 0,
         is_read TINYINT(1) DEFAULT 0, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         INDEX(is_read)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS account_deletion_requests (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        client_id INT NOT NULL,
+        client_name VARCHAR(255) NOT NULL DEFAULT '',
+        client_phone VARCHAR(50) NOT NULL DEFAULT '',
+        client_email VARCHAR(190) NULL,
+        status VARCHAR(30) NOT NULL DEFAULT 'pending',
+        requested_at DATETIME NOT NULL,
+        processed_at DATETIME NULL,
+        admin_note TEXT NULL,
+        INDEX idx_client_status (client_id, status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS delivery_zones (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        company_id INT NOT NULL DEFAULT 0,
+        city_id INT NOT NULL DEFAULT 0,
+        zone_name VARCHAR(160) NOT NULL,
+        delivery_delay_label VARCHAR(80) NOT NULL DEFAULT '',
+        delivery_fee DECIMAL(12,2) NOT NULL DEFAULT 0,
+        sort_order INT NOT NULL DEFAULT 0,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        notes VARCHAR(255) NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_context(company_id, city_id, is_active)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS admin_export_logs (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        admin_user VARCHAR(120) NOT NULL DEFAULT '',
+        client_id INT NOT NULL DEFAULT 0,
+        export_type VARCHAR(20) NOT NULL DEFAULT 'json',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        INDEX idx_client (client_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
 } catch(Exception $e) {}
 
 /* ══ AJAX ══ */
@@ -333,6 +367,264 @@ if (!empty($_POST['action'])) {
         exit;
     }
 
+    if ($act === 'get_delete_requests') {
+        try {
+            $status = trim($_POST['status'] ?? '');
+            $search = trim($_POST['search'] ?? '');
+            $companyId = (int)($_POST['company_id'] ?? 0);
+            $cityId = (int)($_POST['city_id'] ?? 0);
+            $dateFrom = trim($_POST['date_from'] ?? '');
+            $dateTo = trim($_POST['date_to'] ?? '');
+            $where = ['1=1'];
+            $params = [];
+            if ($status !== '') {
+                $where[] = 'adr.status = ?';
+                $params[] = $status;
+            }
+            if ($search !== '') {
+                $where[] = '(adr.client_name LIKE ? OR adr.client_phone LIKE ? OR adr.client_email LIKE ?)';
+                $lk = '%' . $search . '%';
+                $params[] = $lk;
+                $params[] = $lk;
+                $params[] = $lk;
+            }
+            if ($companyId > 0) {
+                $where[] = 'c.company_id = ?';
+                $params[] = $companyId;
+            }
+            if ($cityId > 0) {
+                $where[] = 'c.city_id = ?';
+                $params[] = $cityId;
+            }
+            if ($dateFrom !== '') {
+                $where[] = 'DATE(adr.requested_at) >= ?';
+                $params[] = $dateFrom;
+            }
+            if ($dateTo !== '') {
+                $where[] = 'DATE(adr.requested_at) <= ?';
+                $params[] = $dateTo;
+            }
+            $sql = "SELECT adr.*, c.company_id, c.city_id, co.name AS company_name, ci.name AS city_name
+                    FROM account_deletion_requests adr
+                    LEFT JOIN clients c ON c.id = adr.client_id
+                    LEFT JOIN companies co ON co.id = c.company_id
+                    LEFT JOIN cities ci ON ci.id = c.city_id
+                    WHERE " . implode(' AND ', $where) . "
+                    ORDER BY CASE WHEN adr.status='pending' THEN 0 ELSE 1 END, adr.requested_at DESC
+                    LIMIT 150";
+            $stmt = $pdo->prepare($sql);
+            $stmt->execute($params);
+            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            $stats = $pdo->query("SELECT
+                COUNT(*) AS total,
+                SUM(status='pending') AS pending,
+                SUM(status='approved') AS approved,
+                SUM(status='rejected') AS rejected
+                FROM account_deletion_requests")->fetch(PDO::FETCH_ASSOC);
+            echo json_encode(['success'=>true,'rows'=>$rows,'stats'=>$stats]);
+        } catch(Exception $e) {
+            echo json_encode(['success'=>false,'message'=>$e->getMessage()]);
+        }
+        exit;
+    }
+
+    if ($act === 'process_delete_request') {
+        try {
+            $id = (int)($_POST['request_id'] ?? 0);
+            $status = trim($_POST['status'] ?? '');
+            $note = trim($_POST['admin_note'] ?? '');
+            if (!$id || !in_array($status, ['approved','rejected'], true)) {
+                echo json_encode(['success'=>false,'message'=>'Données invalides']);
+                exit;
+            }
+            $stmt = $pdo->prepare("UPDATE account_deletion_requests SET status=?, processed_at=NOW(), admin_note=? WHERE id=?");
+            $stmt->execute([$status, $note, $id]);
+            $noteTitle = $status === 'approved' ? 'Suppression approuvée' : 'Suppression refusée';
+            $noteMsg = $status === 'approved'
+                ? 'La demande de suppression du compte a été approuvée par l’administration.'
+                : 'La demande de suppression du compte a été refusée par l’administration.';
+            $clientStmt = $pdo->prepare("SELECT client_id FROM account_deletion_requests WHERE id=? LIMIT 1");
+            $clientStmt->execute([$id]);
+            $clientId = (int)$clientStmt->fetchColumn();
+            if ($clientId > 0) {
+                if ($status === 'approved') {
+                    $anonRef = 'deleted_' . $clientId . '_' . date('YmdHis');
+                    try {
+                        $pdo->prepare("UPDATE clients SET
+                            name=?,
+                            email=?,
+                            phone=?,
+                            password_hash=?,
+                            loyalty_points=0,
+                            vip_status='standard'
+                            WHERE id=?")
+                            ->execute([
+                                'Compte supprimé',
+                                $anonRef . '@deleted.local',
+                                $anonRef,
+                                password_hash(bin2hex(random_bytes(16)), PASSWORD_DEFAULT),
+                                $clientId
+                            ]);
+                    } catch (Exception $e) {
+                    }
+                }
+                try {
+                    $pdo->prepare("INSERT INTO notifications(client_id,title,message,type) VALUES(?,?,?,'info')")
+                        ->execute([$clientId, $noteTitle, $noteMsg . ($note !== '' ? ' Motif: ' . $note : '')]);
+                } catch (Exception $e) {
+                }
+            }
+            echo json_encode(['success'=>true]);
+        } catch(Exception $e) {
+            echo json_encode(['success'=>false,'message'=>$e->getMessage()]);
+        }
+        exit;
+    }
+
+    if ($act === 'search_clients_admin') {
+        try {
+            $search = trim($_POST['search'] ?? '');
+            if ($search === '') {
+                echo json_encode(['success'=>true,'rows'=>[]]);
+                exit;
+            }
+            $lk = '%' . $search . '%';
+            $stmt = $pdo->prepare("
+                SELECT c.id, c.name, c.phone, c.email, co.name AS company_name, ci.name AS city_name
+                FROM clients c
+                LEFT JOIN companies co ON co.id = c.company_id
+                LEFT JOIN cities ci ON ci.id = c.city_id
+                WHERE c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ?
+                ORDER BY c.id DESC
+                LIMIT 25
+            ");
+            $stmt->execute([$lk, $lk, $lk]);
+            echo json_encode(['success'=>true,'rows'=>$stmt->fetchAll(PDO::FETCH_ASSOC) ?: []]);
+        } catch(Exception $e) {
+            echo json_encode(['success'=>false,'message'=>$e->getMessage()]);
+        }
+        exit;
+    }
+
+    if ($act === 'export_client_data_admin') {
+        try {
+            $clientId = (int)($_POST['client_id'] ?? 0);
+            $format = trim($_POST['format'] ?? 'json');
+            if ($clientId <= 0 || !in_array($format, ['json','csv'], true)) {
+                echo json_encode(['success'=>false,'message'=>'Paramètres invalides']);
+                exit;
+            }
+            $client = $pdo->prepare("SELECT id,name,phone,email,created_at FROM clients WHERE id=? LIMIT 1");
+            $client->execute([$clientId]);
+            $clientRow = $client->fetch(PDO::FETCH_ASSOC) ?: [];
+            if (!$clientRow) {
+                echo json_encode(['success'=>false,'message'=>'Client introuvable']);
+                exit;
+            }
+            $orders = $pdo->prepare("SELECT id,order_number,status,total_amount,delivery_address,delivery_zone_name,delivery_fee,created_at FROM orders WHERE client_id=? ORDER BY created_at DESC");
+            $orders->execute([$clientId]);
+            $orderRows = $orders->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            $payload = [
+                'export_date' => date('Y-m-d H:i:s'),
+                'admin_user' => $admin_name,
+                'client' => $clientRow,
+                'orders' => $orderRows,
+            ];
+            $pdo->prepare("INSERT INTO admin_export_logs(admin_user,client_id,export_type) VALUES(?,?,?)")
+                ->execute([$admin_name, $clientId, $format]);
+            if ($format === 'csv') {
+                $rows = [["Section","Champ","Valeur"]];
+                foreach ($clientRow as $k => $v) $rows[] = ['client', $k, (string)$v];
+                foreach ($orderRows as $idx => $row) {
+                    foreach ($row as $k => $v) $rows[] = ['order_' . ($idx + 1), $k, (string)$v];
+                }
+                $csv = "\xEF\xBB\xBF";
+                foreach ($rows as $line) {
+                    $csv .= '"' . implode('";"', array_map(static function($value){
+                        return str_replace('"', '""', (string)$value);
+                    }, $line)) . '"' . "\n";
+                }
+                echo json_encode(['success'=>true,'format'=>'csv','filename'=>'client-admin-export-'.$clientId.'.csv','content'=>$csv]);
+            } else {
+                echo json_encode(['success'=>true,'format'=>'json','filename'=>'client-admin-export-'.$clientId.'.json','content'=>json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT)]);
+            }
+        } catch(Exception $e) {
+            echo json_encode(['success'=>false,'message'=>$e->getMessage()]);
+        }
+        exit;
+    }
+
+    if ($act === 'get_delivery_zones_admin') {
+        try {
+            $companyId = (int)($_POST['company_id'] ?? 0);
+            $cityId = (int)($_POST['city_id'] ?? 0);
+            $where = ['dz.is_active = 1'];
+            $params = [];
+            if ($companyId > 0) {
+                $where[] = 'dz.company_id = ?';
+                $params[] = $companyId;
+            }
+            if ($cityId > 0) {
+                $where[] = 'dz.city_id = ?';
+                $params[] = $cityId;
+            }
+            $stmt = $pdo->prepare("
+                SELECT dz.*, co.name AS company_name, ci.name AS city_name
+                FROM delivery_zones dz
+                LEFT JOIN companies co ON co.id = dz.company_id
+                LEFT JOIN cities ci ON ci.id = dz.city_id
+                WHERE " . implode(' AND ', $where) . "
+                ORDER BY dz.company_id, dz.city_id, dz.sort_order, dz.id
+            ");
+            $stmt->execute($params);
+            echo json_encode(['success'=>true,'rows'=>$stmt->fetchAll(PDO::FETCH_ASSOC) ?: []]);
+        } catch(Exception $e) {
+            echo json_encode(['success'=>false,'message'=>$e->getMessage()]);
+        }
+        exit;
+    }
+
+    if ($act === 'save_delivery_zone') {
+        try {
+            $id = (int)($_POST['zone_id'] ?? 0);
+            $companyId = (int)($_POST['company_id'] ?? 0);
+            $cityId = (int)($_POST['city_id'] ?? 0);
+            $zoneName = trim($_POST['zone_name'] ?? '');
+            $delayLabel = trim($_POST['delivery_delay_label'] ?? '');
+            $fee = (float)($_POST['delivery_fee'] ?? 0);
+            $sortOrder = (int)($_POST['sort_order'] ?? 0);
+            $notes = trim($_POST['notes'] ?? '');
+            if ($companyId <= 0 || $cityId <= 0 || $zoneName === '' || $delayLabel === '') {
+                echo json_encode(['success'=>false,'message'=>'Champs requis manquants']);
+                exit;
+            }
+            if ($id > 0) {
+                $stmt = $pdo->prepare("UPDATE delivery_zones SET company_id=?, city_id=?, zone_name=?, delivery_delay_label=?, delivery_fee=?, sort_order=?, notes=?, is_active=1 WHERE id=?");
+                $stmt->execute([$companyId, $cityId, $zoneName, $delayLabel, $fee, $sortOrder, $notes !== '' ? $notes : null, $id]);
+            } else {
+                $stmt = $pdo->prepare("INSERT INTO delivery_zones(company_id,city_id,zone_name,delivery_delay_label,delivery_fee,sort_order,notes) VALUES(?,?,?,?,?,?,?)");
+                $stmt->execute([$companyId, $cityId, $zoneName, $delayLabel, $fee, $sortOrder, $notes !== '' ? $notes : null]);
+            }
+            echo json_encode(['success'=>true]);
+        } catch(Exception $e) {
+            echo json_encode(['success'=>false,'message'=>$e->getMessage()]);
+        }
+        exit;
+    }
+
+    if ($act === 'delete_delivery_zone') {
+        try {
+            $id = (int)($_POST['zone_id'] ?? 0);
+            if ($id > 0) {
+                $pdo->prepare("UPDATE delivery_zones SET is_active=0 WHERE id=?")->execute([$id]);
+            }
+            echo json_encode(['success'=>true]);
+        } catch(Exception $e) {
+            echo json_encode(['success'=>false,'message'=>$e->getMessage()]);
+        }
+        exit;
+    }
+
     echo json_encode(['success'=>false,'message'=>'Action inconnue']); exit;
 }
 
@@ -350,9 +642,9 @@ $unread_cnt = (int)$pdo->query("SELECT COUNT(*) FROM cashier_notifications WHERE
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 <style>
 :root{
-  --bg:#04090e; --card:#0c1b28; --card2:#0f2133; --bord:rgba(50,190,143,.13);
-  --neon:#32be8f; --neon2:#19ffa3; --red:#ff3553; --gold:#ffd060;
-  --cyan:#06b6d4; --blue:#3d8cff; --purple:#a78bfa; --orange:#ff9140;
+  --bg:#0f1726; --card:#1b263b; --card2:#22324a; --bord:rgba(50,190,143,.13);
+  --neon:#00a86b; --neon2:#00c87a; --red:#e53935; --gold:#f9a825;
+  --cyan:#06b6d4; --blue:#1976d2; --purple:#a78bfa; --orange:#f57c00;
   --text:#dff2ea; --text2:#b0d4c4; --muted:#5a7a6c;
   --gn:0 0 20px rgba(50,190,143,.38); --gr:0 0 20px rgba(255,53,83,.38);
   --fh:'Source Serif 4','Book Antiqua',Georgia,serif;
@@ -432,6 +724,25 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
 /* PANEL */
 .panel{display:none;padding:16px;animation:fadeUp .28s ease}
 .panel.on{display:block}
+.admin-card{background:var(--card);border:1px solid var(--bord);border-radius:14px;padding:14px;margin-bottom:14px}
+.admin-card-title{font-size:14px;font-weight:900;color:var(--text);margin-bottom:10px}
+.mini-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:9px;margin-bottom:12px}
+.mini-stat{background:rgba(50,190,143,.06);border:1px solid rgba(50,190,143,.16);border-radius:12px;padding:12px}
+.mini-stat strong{display:block;font-size:22px;color:var(--text)}
+.mini-stat span{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.8px}
+.req-card,.zone-card{background:var(--card);border:1px solid var(--bord);border-radius:14px;padding:14px;margin-bottom:10px}
+.req-top,.zone-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.req-name,.zone-name{font-size:14px;font-weight:900;color:var(--text)}
+.req-meta,.zone-meta{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
+.req-note{margin-top:10px;padding:10px 12px;border-radius:10px;background:rgba(255,208,96,.05);border:1px solid rgba(255,208,96,.14);font-size:11px;color:var(--text2)}
+.req-actions,.zone-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.status-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;font-size:10px;font-weight:900;text-transform:uppercase;letter-spacing:.7px}
+.status-pill.pending{background:rgba(255,208,96,.1);border:1px solid rgba(255,208,96,.22);color:var(--gold)}
+.status-pill.approved{background:rgba(50,190,143,.1);border:1px solid rgba(50,190,143,.22);color:var(--neon)}
+.status-pill.rejected{background:rgba(255,53,83,.1);border:1px solid rgba(255,53,83,.22);color:var(--red)}
+.zone-form-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:9px}
+.hint{font-size:11px;font-weight:700;color:var(--muted)}
+@media(max-width:700px){.zone-form-grid,.mini-grid{grid-template-columns:1fr}}
 
 /* KPI */
 .kpi-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:9px;margin-bottom:14px}
@@ -471,7 +782,7 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
   font-family:var(--fh);font-size:13px;font-weight:900;color:var(--text);cursor:pointer;
   appearance:none;transition:border-color .2s}
 .fsel:focus{outline:none;border-color:var(--neon)}
-.fsel option{background:#0c1b28}
+.fsel option{background:#1b263b}
 
 /* STATUS PILLS */
 .pills{display:flex;gap:6px;overflow-x:auto;padding-bottom:10px;margin-bottom:11px;-webkit-overflow-scrolling:touch}
@@ -537,7 +848,7 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
   font-family:var(--fh);font-size:12px;font-weight:900;color:var(--text);cursor:pointer;
   appearance:none;transition:border-color .2s}
 .ssel:focus{outline:none;border-color:var(--neon)}
-.ssel option{background:#0c1b28}
+.ssel option{background:#1b263b}
 .mpill{display:inline-flex;align-items:center;gap:4px;padding:3px 9px;border-radius:8px;
   font-size:10px;font-weight:900;background:rgba(0,0,0,.2);border:1px solid rgba(255,255,255,.05);color:var(--muted)}
 
@@ -636,7 +947,7 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
 .p-filters select,.p-filters input{font-family:var(--fh);font-size:13px;font-weight:700;color:var(--text);
   background:rgba(0,0,0,.3);border:1.5px solid var(--bord);border-radius:9px;padding:8px 10px;width:100%}
 .p-filters select:focus,.p-filters input:focus{outline:none;border-color:var(--orange)}
-.p-filters select option{background:#0c1b28}
+.p-filters select option{background:#1b263b}
 .p-fg{flex:1;min-width:150px}
 .p-actions{display:flex;align-items:center;gap:8px;margin-bottom:14px;flex-wrap:wrap}
 .p-summary{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
@@ -705,7 +1016,7 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
 .fg textarea{resize:vertical;min-height:72px}
 .fg input:focus,.fg select:focus,.fg textarea:focus{outline:none;border-color:var(--neon)}
 .fg input::placeholder,.fg textarea::placeholder{color:var(--muted)}
-.fg select option{background:#0c1b28}
+.fg select option{background:#1b263b}
 .fg-row{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin-bottom:9px}
 .ncard{background:var(--card);border:1px solid var(--bord);border-radius:12px;
   margin-bottom:8px;overflow:hidden;transition:border-color .25s;
@@ -867,6 +1178,9 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
   <div class="tnav on" id="tnav-orders" onclick="goTab('orders')"><i class="fas fa-box"></i> Commandes <span class="tnbdg" id="tnb-pending" style="display:none">0</span></div>
   <div class="tnav" id="tnav-stats" onclick="goTab('stats')"><i class="fas fa-chart-bar"></i> Statistiques</div>
   <div class="tnav" id="tnav-notifs" onclick="goTab('notifs')"><i class="fas fa-bell"></i> Notifs Caisse <span class="tnbdg" id="tnb-notifs" style="<?= $unread_cnt>0?'':'display:none' ?>"><?= $unread_cnt ?></span></div>
+  <div class="tnav" id="tnav-deletions" onclick="goTab('deletions')"><i class="fas fa-user-slash"></i> Suppressions</div>
+  <div class="tnav" id="tnav-zones" onclick="goTab('zones')"><i class="fas fa-map-marked-alt"></i> Zones livraison</div>
+  <div class="tnav" id="tnav-exports" onclick="goTab('exports')"><i class="fas fa-file-export"></i> Exports clients</div>
   <a class="tnav" href="/../dashboard/index.php"><i class="fas fa-gauge-high"></i> Dashboard</a>
 </div>
 
@@ -959,6 +1273,77 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
   <div class="pager" id="npager"></div>
 </div>
 
+<div class="panel" id="panel-deletions">
+  <div class="admin-card">
+    <div class="admin-card-title">Demandes de suppression de compte</div>
+    <div class="mini-grid">
+      <div class="mini-stat"><strong id="dr-total">0</strong><span>Total</span></div>
+      <div class="mini-stat"><strong id="dr-pending">0</strong><span>En attente</span></div>
+      <div class="mini-stat"><strong id="dr-approved">0</strong><span>Approuvées</span></div>
+      <div class="mini-stat"><strong id="dr-rejected">0</strong><span>Refusées</span></div>
+    </div>
+    <div class="filters">
+      <div class="srch"><i class="fas fa-search"></i><input type="text" id="dr-search" placeholder="Nom, téléphone, email…" oninput="debDeleteSearch()"></div>
+      <select class="fsel" id="dr-status" onchange="loadDeleteRequests()">
+        <option value="">Tous les statuts</option>
+        <option value="pending">En attente</option>
+        <option value="approved">Approuvée</option>
+        <option value="rejected">Refusée</option>
+      </select>
+      <select class="fsel" id="dr-company" onchange="loadDeleteRequests()"><option value="">Toutes sociétés</option><?php foreach($companies as $c): ?><option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['name']) ?></option><?php endforeach; ?></select>
+      <select class="fsel" id="dr-city" onchange="loadDeleteRequests()"><option value="">Toutes villes</option><?php foreach($cities as $c): ?><option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['name']) ?></option><?php endforeach; ?></select>
+      <input class="fsel" type="date" id="dr-from" onchange="loadDeleteRequests()">
+      <input class="fsel" type="date" id="dr-to" onchange="loadDeleteRequests()">
+      <button class="btn btn-n btn-sm" onclick="loadDeleteRequests()"><i class="fas fa-sync-alt"></i> Actualiser</button>
+    </div>
+    <div id="delete-requests-list"><div class="empty"><i class="fas fa-spinner fa-spin"></i><h3>Chargement…</h3></div></div>
+  </div>
+</div>
+
+<div class="panel" id="panel-zones">
+  <div class="admin-card">
+    <div class="admin-card-title">Configurer les zones de livraison dynamiques</div>
+    <div class="zone-form-grid">
+      <div class="fg"><label>Société *</label><select id="zone-company"><option value="">Choisir…</option><?php foreach($companies as $c): ?><option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['name']) ?></option><?php endforeach; ?></select></div>
+      <div class="fg"><label>Ville *</label><select id="zone-city"><option value="">Choisir…</option><?php foreach($cities as $c): ?><option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['name']) ?></option><?php endforeach; ?></select></div>
+      <div class="fg"><label>Zone *</label><input type="text" id="zone-name" placeholder="Ex: Centre-ville"></div>
+      <div class="fg"><label>Délai *</label><input type="text" id="zone-delay" placeholder="Ex: 30-45 min"></div>
+      <div class="fg"><label>Frais (CFA)</label><input type="number" id="zone-fee" min="0" step="100" value="0"></div>
+      <div class="fg"><label>Ordre</label><input type="number" id="zone-sort" min="0" step="1" value="10"></div>
+    </div>
+    <div class="fg"><label>Note interne</label><input type="text" id="zone-notes" placeholder="Ex: confirmation WhatsApp recommandée"></div>
+    <div class="req-actions">
+      <button class="btn btn-solid" onclick="saveZone()"><i class="fas fa-save"></i> Enregistrer la zone</button>
+      <button class="btn btn-g" onclick="resetZoneForm()"><i class="fas fa-rotate-left"></i> Réinitialiser</button>
+    </div>
+    <div class="hint">Les zones configurées ici alimentent directement le panneau “Zone de livraison” de `commande_mobile.php`.</div>
+    <input type="hidden" id="zone-id" value="0">
+  </div>
+  <div class="admin-card">
+    <div class="admin-card-title">Zones enregistrées</div>
+    <div class="filters">
+      <select class="fsel" id="zone-filter-company" onchange="loadZonesAdmin()">
+        <option value="">Toutes sociétés</option>
+        <?php foreach($companies as $c): ?><option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['name']) ?></option><?php endforeach; ?>
+      </select>
+      <select class="fsel" id="zone-filter-city" onchange="loadZonesAdmin()">
+        <option value="">Toutes villes</option>
+        <?php foreach($cities as $c): ?><option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['name']) ?></option><?php endforeach; ?>
+      </select>
+      <button class="btn btn-n btn-sm" onclick="loadZonesAdmin()"><i class="fas fa-sync-alt"></i> Actualiser</button>
+    </div>
+    <div id="zones-list"><div class="empty"><i class="fas fa-map"></i><h3>Aucune zone chargée</h3></div></div>
+  </div>
+</div>
+
+<div class="panel" id="panel-exports">
+  <div class="admin-card">
+    <div class="admin-card-title">Export des données client</div>
+    <div class="srch"><i class="fas fa-search"></i><input type="text" id="export-client-search" placeholder="Rechercher un client par nom, téléphone ou email…" oninput="searchClientsForExport()"></div>
+    <div id="export-client-results" style="margin-top:12px"><div class="empty"><i class="fas fa-users"></i><h3>Recherche client</h3><p>Saisissez au moins 1 terme pour exporter.</p></div></div>
+  </div>
+</div>
+
 </div><!-- /wrap -->
 
 <!-- DETAIL MODAL -->
@@ -988,8 +1373,9 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
 <script>
 var SELF = location.pathname;
 var curSt = '', curPg = 1, maxOid = 0, maxNid = 0;
-var selIds = new Set(), sTmr = null, pollTmr = null;
+var selIds = new Set(), sTmr = null, pollTmr = null, deleteSearchTmr = null, exportSearchTmr = null;
 var lastData = null, allNotifs = [], nFilter = 'all', nPage = 1;
+var deleteRows = [], zoneRows = [];
 var isRendering = false; /* flag pour éviter double render */
 
 var SCFG = {
@@ -1041,16 +1427,19 @@ function toast(title,sub,type,dur){
 
 /* ══ TABS ══ */
 function goTab(t){
-  ['orders','stats','notifs'].forEach(function(x){
+  ['orders','stats','notifs','deletions','zones','exports'].forEach(function(x){
     document.getElementById('panel-'+x).classList.remove('on');
     document.getElementById('tnav-'+x).classList.remove('on');
   });
   document.getElementById('panel-'+t).classList.add('on');
   document.getElementById('tnav-'+t).classList.add('on');
-  var titles={orders:'Dashboard Commandes',stats:'Statistiques',notifs:'Notifications Caisse'};
+  var titles={orders:'Dashboard Commandes',stats:'Statistiques',notifs:'Notifications Caisse',deletions:'Demandes de suppression',zones:'Zones de livraison',exports:'Exports clients'};
   document.getElementById('tb-title').textContent=titles[t]||t;
   if(t==='stats')loadChart();
   if(t==='notifs')loadNotifs(true);
+  if(t==='deletions')loadDeleteRequests();
+  if(t==='zones')loadZonesAdmin();
+  if(t==='exports')searchClientsForExport();
 }
 
 /* ══════════════════════════════════════════════════════
@@ -1493,6 +1882,251 @@ function flashNbdg(){
   var c=+(b.textContent.replace('+',''))||0;
   b.textContent=c+1;b.style.display='flex';b.style.animation='pop .35s ease';
   setTimeout(function(){b.style.animation='';},350);
+}
+
+async function loadDeleteRequests(){
+  var fd=new FormData();
+  fd.append('action','get_delete_requests');
+  fd.append('status',document.getElementById('dr-status')?.value||'');
+  fd.append('search',document.getElementById('dr-search')?.value.trim()||'');
+  fd.append('company_id',document.getElementById('dr-company')?.value||'');
+  fd.append('city_id',document.getElementById('dr-city')?.value||'');
+  fd.append('date_from',document.getElementById('dr-from')?.value||'');
+  fd.append('date_to',document.getElementById('dr-to')?.value||'');
+  try{
+    var res=await fetch(SELF,{method:'POST',body:fd});
+    var d=await res.json();
+    if(!d.success){toast('Erreur',d.message||'','err');return;}
+    deleteRows=d.rows||[];
+    var s=d.stats||{};
+    document.getElementById('dr-total').textContent=s.total||0;
+    document.getElementById('dr-pending').textContent=s.pending||0;
+    document.getElementById('dr-approved').textContent=s.approved||0;
+    document.getElementById('dr-rejected').textContent=s.rejected||0;
+    renderDeleteRequests(deleteRows);
+  }catch(ex){toast('Erreur réseau',ex.message,'err');}
+}
+function debDeleteSearch(){
+  clearTimeout(deleteSearchTmr);
+  deleteSearchTmr=setTimeout(loadDeleteRequests,320);
+}
+
+function renderDeleteRequests(rows){
+  var box=document.getElementById('delete-requests-list');
+  if(!rows.length){
+    box.innerHTML='<div class="empty"><i class="fas fa-user-check"></i><h3>Aucune demande</h3><p>Rien à traiter pour le moment</p></div>';
+    return;
+  }
+  box.innerHTML=rows.map(function(r){
+    var st=String(r.status||'pending');
+    return '<div class="req-card">'+
+      '<div class="req-top">'+
+        '<div><div class="req-name">'+(r.client_name||'Client #'+r.client_id)+'</div>'+
+        '<div class="req-meta">'+
+          '<span class="mpill"><i class="fas fa-phone"></i> '+(r.client_phone||'—')+'</span>'+
+          (r.client_email?'<span class="mpill"><i class="fas fa-envelope"></i> '+r.client_email+'</span>':'')+
+          '<span class="mpill"><i class="fas fa-building"></i> '+(r.company_name||'—')+'</span>'+
+          '<span class="mpill"><i class="fas fa-city"></i> '+(r.city_name||'—')+'</span>'+
+          '<span class="mpill"><i class="fas fa-clock"></i> '+fdate(r.requested_at,false)+'</span>'+
+        '</div></div>'+
+        '<span class="status-pill '+st+'">'+st+'</span>'+
+      '</div>'+
+      (r.admin_note?'<div class="req-note"><strong>Note admin:</strong> '+r.admin_note+'</div>':'')+
+      (st==='pending'
+        ? '<div class="req-actions">'+
+            '<button class="btn btn-n btn-sm" onclick="processDeleteRequest('+r.id+',\'approved\')"><i class="fas fa-check"></i> Approuver</button>'+
+            '<button class="btn btn-r btn-sm" onclick="processDeleteRequest('+r.id+',\'rejected\')"><i class="fas fa-ban"></i> Refuser</button>'+
+          '</div>'
+        : '<div class="hint">Traitée le '+(r.processed_at?fdate(r.processed_at,false):'—')+'</div>')+
+    '</div>';
+  }).join('');
+}
+
+async function processDeleteRequest(id,status){
+  var note=prompt(status==='approved' ? 'Note admin optionnelle pour l’approbation :' : 'Motif du refus :','');
+  if(note===null) return;
+  var fd=new FormData();
+  fd.append('action','process_delete_request');
+  fd.append('request_id',id);
+  fd.append('status',status);
+  fd.append('admin_note',note);
+  try{
+    var res=await fetch(SELF,{method:'POST',body:fd});
+    var d=await res.json();
+    if(d.success){
+      toast('Demande traitée',status==='approved'?'Suppression approuvée':'Suppression refusée','ok');
+      loadDeleteRequests();
+    }else{
+      toast('Erreur',d.message||'','err');
+    }
+  }catch(ex){toast('Erreur réseau',ex.message,'err');}
+}
+
+function resetZoneForm(){
+  ['zone-id','zone-company','zone-city','zone-name','zone-delay','zone-fee','zone-sort','zone-notes'].forEach(function(id){
+    var el=document.getElementById(id);
+    if(!el) return;
+    if(id==='zone-id') el.value='0';
+    else if(id==='zone-fee') el.value='0';
+    else if(id==='zone-sort') el.value='10';
+    else el.value='';
+  });
+}
+
+async function loadZonesAdmin(){
+  var fd=new FormData();
+  fd.append('action','get_delivery_zones_admin');
+  fd.append('company_id',document.getElementById('zone-filter-company')?.value||'');
+  fd.append('city_id',document.getElementById('zone-filter-city')?.value||'');
+  try{
+    var res=await fetch(SELF,{method:'POST',body:fd});
+    var d=await res.json();
+    if(!d.success){toast('Erreur',d.message||'','err');return;}
+    zoneRows=d.rows||[];
+    renderZones(zoneRows);
+  }catch(ex){toast('Erreur réseau',ex.message,'err');}
+}
+
+function renderZones(rows){
+  var box=document.getElementById('zones-list');
+  if(!rows.length){
+    box.innerHTML='<div class="empty"><i class="fas fa-map-marked-alt"></i><h3>Aucune zone</h3><p>Créez une zone pour alimenter l’application client.</p></div>';
+    return;
+  }
+  box.innerHTML=rows.map(function(z){
+    return '<div class="zone-card">'+
+      '<div class="zone-top"><div><div class="zone-name">'+z.zone_name+'</div>'+
+      '<div class="zone-meta">'+
+      '<span class="mpill"><i class="fas fa-building"></i> '+(z.company_name||'—')+'</span>'+
+      '<span class="mpill"><i class="fas fa-city"></i> '+(z.city_name||'—')+'</span>'+
+      '<span class="mpill"><i class="fas fa-stopwatch"></i> '+(z.delivery_delay_label||'—')+'</span>'+
+      '<span class="mpill"><i class="fas fa-coins"></i> '+fmtFull(+z.delivery_fee)+' CFA</span>'+
+      '<span class="mpill"><i class="fas fa-sort-numeric-down"></i> '+(z.sort_order||0)+'</span>'+
+      '</div></div></div>'+
+      (z.notes?'<div class="req-note" style="margin-top:8px">'+z.notes+'</div>':'')+
+      '<div class="zone-actions">'+
+        '<button class="btn btn-g btn-sm" onclick="editZone('+z.id+')"><i class="fas fa-pen"></i> Modifier</button>'+
+        '<button class="btn btn-r btn-sm" onclick="deleteZone('+z.id+')"><i class="fas fa-trash"></i> Désactiver</button>'+
+      '</div>'+
+    '</div>';
+  }).join('');
+}
+
+function editZone(id){
+  var z=zoneRows.find(function(row){return +row.id===+id;});
+  if(!z) return;
+  document.getElementById('zone-id').value=z.id;
+  document.getElementById('zone-company').value=z.company_id;
+  document.getElementById('zone-city').value=z.city_id;
+  document.getElementById('zone-name').value=z.zone_name||'';
+  document.getElementById('zone-delay').value=z.delivery_delay_label||'';
+  document.getElementById('zone-fee').value=+z.delivery_fee||0;
+  document.getElementById('zone-sort').value=+z.sort_order||0;
+  document.getElementById('zone-notes').value=z.notes||'';
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+
+async function saveZone(){
+  var fd=new FormData();
+  fd.append('action','save_delivery_zone');
+  fd.append('zone_id',document.getElementById('zone-id').value||'0');
+  fd.append('company_id',document.getElementById('zone-company').value||'');
+  fd.append('city_id',document.getElementById('zone-city').value||'');
+  fd.append('zone_name',document.getElementById('zone-name').value.trim());
+  fd.append('delivery_delay_label',document.getElementById('zone-delay').value.trim());
+  fd.append('delivery_fee',document.getElementById('zone-fee').value||'0');
+  fd.append('sort_order',document.getElementById('zone-sort').value||'0');
+  fd.append('notes',document.getElementById('zone-notes').value.trim());
+  try{
+    var res=await fetch(SELF,{method:'POST',body:fd});
+    var d=await res.json();
+    if(d.success){
+      toast('Zone enregistrée','','ok');
+      resetZoneForm();
+      loadZonesAdmin();
+    }else{
+      toast('Erreur',d.message||'','err');
+    }
+  }catch(ex){toast('Erreur réseau',ex.message,'err');}
+}
+
+async function deleteZone(id){
+  if(!confirm('Désactiver cette zone de livraison ?')) return;
+  var fd=new FormData();
+  fd.append('action','delete_delivery_zone');
+  fd.append('zone_id',id);
+  try{
+    var res=await fetch(SELF,{method:'POST',body:fd});
+    var d=await res.json();
+    if(d.success){
+      toast('Zone désactivée','','ok');
+      loadZonesAdmin();
+    }else{
+      toast('Erreur',d.message||'','err');
+    }
+  }catch(ex){toast('Erreur réseau',ex.message,'err');}
+}
+
+function searchClientsForExport(){
+  clearTimeout(exportSearchTmr);
+  exportSearchTmr=setTimeout(async function(){
+    var q=document.getElementById('export-client-search')?.value.trim()||'';
+    var box=document.getElementById('export-client-results');
+    if(q===''){
+      box.innerHTML='<div class="empty"><i class="fas fa-users"></i><h3>Recherche client</h3><p>Saisissez au moins 1 terme pour exporter.</p></div>';
+      return;
+    }
+    var fd=new FormData();
+    fd.append('action','search_clients_admin');
+    fd.append('search',q);
+    try{
+      var res=await fetch(SELF,{method:'POST',body:fd});
+      var d=await res.json();
+      if(!d.success){box.innerHTML='<div class="empty"><p>'+ (d.message||'Erreur') +'</p></div>';return;}
+      if(!(d.rows||[]).length){
+        box.innerHTML='<div class="empty"><i class="fas fa-user-slash"></i><h3>Aucun client</h3><p>Aucun résultat</p></div>';
+        return;
+      }
+      box.innerHTML=(d.rows||[]).map(function(c){
+        return '<div class="req-card">'+
+          '<div class="req-top"><div><div class="req-name">'+(c.name||'Client')+'</div>'+
+          '<div class="req-meta">'+
+          '<span class="mpill"><i class="fas fa-phone"></i> '+(c.phone||'—')+'</span>'+
+          (c.email?'<span class="mpill"><i class="fas fa-envelope"></i> '+c.email+'</span>':'')+
+          '<span class="mpill"><i class="fas fa-building"></i> '+(c.company_name||'—')+'</span>'+
+          '<span class="mpill"><i class="fas fa-city"></i> '+(c.city_name||'—')+'</span>'+
+          '</div></div></div>'+
+          '<div class="req-actions">'+
+          '<button class="btn btn-n btn-sm" onclick="exportClientAdmin('+c.id+',\'json\')"><i class="fas fa-file-code"></i> JSON</button>'+
+          '<button class="btn btn-g btn-sm" onclick="exportClientAdmin('+c.id+',\'csv\')"><i class="fas fa-file-csv"></i> CSV</button>'+
+          '</div>'+
+        '</div>';
+      }).join('');
+    }catch(ex){box.innerHTML='<div class="empty"><p>Erreur réseau</p></div>';}
+  },260);
+}
+
+async function exportClientAdmin(clientId,format){
+  var fd=new FormData();
+  fd.append('action','export_client_data_admin');
+  fd.append('client_id',clientId);
+  fd.append('format',format);
+  try{
+    var res=await fetch(SELF,{method:'POST',body:fd});
+    var d=await res.json();
+    if(!d.success){toast('Erreur',d.message||'','err');return;}
+    var mime=format==='csv'?'text/csv;charset=utf-8;':'application/json;charset=utf-8';
+    var blob=new Blob([d.content],{type:mime});
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a');
+    a.href=url;
+    a.download=d.filename||('client-export-'+clientId+'.'+format);
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(function(){URL.revokeObjectURL(url);},1200);
+    toast('Export téléchargé','Traçabilité enregistrée','ok');
+  }catch(ex){toast('Erreur réseau',ex.message,'err');}
 }
 
 /* ══ FILTRES / REFRESH ══ */

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#00a884">
+  <title>Messagerie hors ligne</title>
+  <style>
+    :root{--bg:#0b141a;--card:#111b21;--text:#e9edef;--muted:#8696a0;--accent:#00a884}
+    *{box-sizing:border-box}
+    body{margin:0;min-height:100vh;display:grid;place-items:center;background:radial-gradient(circle at top,#16313c 0,#0b141a 55%);font-family:system-ui,sans-serif;color:var(--text)}
+    .card{width:min(92vw,420px);background:var(--card);border:1px solid rgba(255,255,255,.06);border-radius:18px;padding:28px;box-shadow:0 20px 60px rgba(0,0,0,.35)}
+    .icon{width:62px;height:62px;border-radius:16px;background:rgba(0,168,132,.14);display:grid;place-items:center;color:var(--accent);font-size:28px;margin-bottom:18px}
+    h1{font-size:22px;margin:0 0 10px}
+    p{margin:0;color:var(--muted);line-height:1.6}
+    a{display:inline-block;margin-top:18px;color:#00150f;background:var(--accent);padding:11px 16px;border-radius:12px;text-decoration:none;font-weight:700}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">💬</div>
+    <h1>Messagerie hors ligne</h1>
+    <p>La connexion est indisponible. Rouvre la messagerie quand Internet revient pour synchroniser les nouveaux messages.</p>
+    <a href="/_php_classified/messaging/messagerie.php">Réessayer</a>
+  </div>
+</body>
+</html>

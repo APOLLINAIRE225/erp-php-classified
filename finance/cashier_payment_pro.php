@@ -336,26 +336,26 @@ $csrf = $_SESSION['csrf_token'];
    Même charte admin_nasa / attendance / rh_pro
 ═══════════════════════════════════════════════════════ */
 :root {
-    --bg:     #04090e;
-    --surf:   #081420;
-    --card:   #0d1e2c;
-    --card2:  #122030;
+    --bg:#0f1726;
+    --surf:#162033;
+    --card:#1b263b;
+    --card2:#22324a;
     --bord:   rgba(50,190,143,0.14);
     --bord2:  rgba(50,190,143,0.30);
-    --neon:   #32be8f;
-    --neon2:  #19ffa3;
-    --red:    #ff3553;
-    --orange: #ff9140;
-    --blue:   #3d8cff;
-    --gold:   #ffd060;
+    --neon:#00a86b;
+    --neon2:#00c87a;
+    --red:#e53935;
+    --orange:#f57c00;
+    --blue:#1976d2;
+    --gold:#f9a825;
     --purple: #a855f7;
     --cyan:   #06b6d4;
     --pink:   #ec4899;
-    --text:   #e0f2ea;
-    --text2:  #b8d8cc;
-    --muted:  #5a8070;
-    --glow:   0 0 26px rgba(50,190,143,0.45);
-    --glow-r: 0 0 26px rgba(255,53,83,0.45);
+    --text:#e8eef8;
+    --text2:#bfd0e4;
+    --muted:#8ea3bd;
+    --glow:0 8px 24px rgba(0,168,107,0.18);
+    --glow-r:0 8px 24px rgba(229,57,53,0.18);
     /* ── POLICES C059 BOLD ── */
     --fc: 'Courier Prime', 'Courier New', monospace;  /* C059 Bold = Courier Prime Bold */
     --fh: 'Playfair Display', Georgia, serif;         /* Titres déco */
@@ -412,7 +412,7 @@ body::after {
 /* ══ TOPBAR ══ */
 .topbar {
     display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;
-    background:rgba(8,20,32,0.96);border:1px solid var(--bord);border-radius:18px;
+    background:rgba(22,32,51,0.96);border:1px solid var(--bord);border-radius:18px;
     padding:16px 24px;margin-bottom:12px;backdrop-filter:blur(28px);
     box-shadow:0 4px 32px rgba(0,0,0,0.4);position:relative;overflow:hidden;
     animation:fadeUp .4s ease;
@@ -455,7 +455,7 @@ body::after {
     appearance:none;cursor:pointer;transition:all .28s;
 }
 .month-sel:focus { outline:none;border-color:var(--gold); }
-.month-sel option { background:#0d1e2c; }
+.month-sel option { background:#1b263b; }
 
 /* ══ TAB NAV ══ */
 .tab-nav {
@@ -682,7 +682,7 @@ tbody tr:last-child td { border-bottom:none; }
 .fg select:focus,.fg textarea:focus,.fg input:focus {
     outline:none;border-color:var(--neon);box-shadow:0 0 14px rgba(50,190,143,.18);
 }
-.fg select option { background:#0d1e2c;color:var(--text); }
+.fg select option { background:#1b263b;color:var(--text); }
 .fg textarea { resize:vertical;min-height:68px; }
 
 /* SIGNATURE PAD */

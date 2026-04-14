@@ -124,15 +124,15 @@ function getConfidentialityColor($level) {
     font-weight:700 900; font-style:normal;
 }
 :root {
-    --bg   :#04090e; --surf:#081420; --card:#0d1e2c; --card2:#122030;
-    --bord :rgba(50,190,143,0.16);
-    --neon :#32be8f; --neon2:#19ffa3;
-    --red  :#ff3553; --orange:#ff9140; --blue:#3d8cff; --gold:#ffd060;
+    --bg:#0f1726; --surf:#162033; --card:#1b263b; --card2:#22324a;
+    --bord:rgba(148,163,184,0.18);
+    --neon:#00a86b; --neon2:#00c87a;
+    --red:#e53935; --orange:#f57c00; --blue:#1976d2; --gold:#f9a825;
     --purple:#a855f7; --cyan:#06b6d4;
-    --text :#e0f2ea; --text2:#b8d8cc; --muted:#5a8070;
-    --glow     :0 0 26px rgba(50,190,143,0.45);
-    --glow-r   :0 0 26px rgba(255,53,83,0.45);
-    --glow-gold:0 0 26px rgba(255,208,96,0.4);
+    --text:#e8eef8; --text2:#bfd0e4; --muted:#8ea3bd;
+    --glow:0 8px 24px rgba(0,168,107,0.18);
+    --glow-r:0 8px 24px rgba(229,57,53,0.18);
+    --glow-gold:0 8px 24px rgba(249,168,37,0.18);
     --fh:'C059','Source Serif 4','Playfair Display','Book Antiqua',Georgia,serif;
     --fb:'Inter','Segoe UI',system-ui,sans-serif;
 }
@@ -149,7 +149,7 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
 
 /* ═══ TOPBAR ═══ */
 .topbar{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:16px;
-    background:rgba(8,20,32,0.94);border:1px solid var(--bord);border-radius:18px;
+    background:rgba(22,32,51,0.96);border:1px solid var(--bord);border-radius:18px;
     padding:18px 28px;margin-bottom:16px;backdrop-filter:blur(24px);}
 .brand{display:flex;align-items:center;gap:16px;flex-shrink:0;}
 .brand-ico{width:50px;height:50px;background:linear-gradient(135deg,var(--neon),var(--cyan));
@@ -231,11 +231,32 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
 
 @keyframes fadeUp{from{opacity:0;transform:translateY(24px)}to{opacity:1;transform:translateY(0)}}
 @media(max-width:768px){
-    .wrap{padding:12px;}
-    .doc-header{flex-direction:column;}
-    .info-grid{grid-template-columns:1fr;}
-    .doc-actions{flex-direction:column;}
-    .doc-actions .btn{width:100%;justify-content:center;}
+    body{line-height:1.5}
+    .wrap{padding:8px 8px 28px;max-width:680px}
+    .topbar{position:sticky;top:0;z-index:80;padding:10px 12px;border-radius:16px;margin-bottom:12px;background:rgba(22,32,51,.97);backdrop-filter:blur(16px)}
+    .brand{gap:10px}
+    .brand-ico{width:38px;height:38px;border-radius:12px;font-size:18px}
+    .brand-txt h1{font-size:16px}
+    .brand-txt p{font-size:9px;letter-spacing:1.4px}
+    .back-btn{width:100%;justify-content:center;padding:10px 12px;font-size:11px;border-radius:12px}
+    .panel{border-radius:16px;margin-bottom:12px}
+    .ph{padding:12px 14px}
+    .ph-title{font-size:14px}
+    .pb{padding:12px}
+    .doc-header{flex-direction:column;gap:14px;margin-bottom:16px}
+    .doc-icon{width:62px;height:62px;border-radius:16px;font-size:28px}
+    .doc-title{font-size:18px}
+    .doc-ref{font-size:11px;padding:4px 10px}
+    .doc-badges{gap:8px}
+    .badge{padding:5px 10px;font-size:10px}
+    .doc-actions{flex-direction:column;gap:8px}
+    .doc-actions .btn{width:100%;justify-content:center;padding:10px 12px;font-size:11px;border-radius:12px}
+    .info-grid{grid-template-columns:1fr;gap:10px;margin-bottom:16px}
+    .info-item{padding:12px 14px;border-radius:12px}
+    .info-label{font-size:10px}
+    .info-value{font-size:14px}
+    .logs-table th,.logs-table td{padding:10px 8px;font-size:10px}
+    .action-badge{font-size:9px;padding:4px 8px}
 }
 </style>
 </head>

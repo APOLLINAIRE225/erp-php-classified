@@ -129,11 +129,11 @@ $pay_labels = [
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 <style>
 :root{
-    --bg:#04090e;--surf:#081420;--card:#0d1e2c;--card2:#122030;
+    --bg:#0f1726;--surf:#162033;--card:#1b263b;--card2:#22324a;
     --bord:rgba(50,190,143,.13);--bord2:rgba(50,190,143,.3);
-    --neon:#32be8f;--neon2:#19ffa3;--red:#ff3553;--orange:#ff9140;
-    --blue:#3d8cff;--gold:#ffd060;--purple:#a855f7;--cyan:#06b6d4;
-    --text:#e0f2ea;--text2:#b8d8cc;--muted:#5a8070;
+    --neon:#00a86b;--neon2:#00c87a;--red:#e53935;--orange:#f57c00;
+    --blue:#1976d2;--gold:#f9a825;--purple:#a855f7;--cyan:#06b6d4;
+    --text:#e8eef8;--text2:#bfd0e4;--muted:#8ea3bd;
     --glow:0 0 28px rgba(50,190,143,.5);
     --fc:'Courier Prime','Courier New',monospace;
     --fh:'Playfair Display',Georgia,serif;

@@ -77,7 +77,7 @@ $is_host = ($meeting['host_id'] == $current_user_id);
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 <style>
 @font-face{font-family:'C059';src:local('C059-Bold'),local('C059 Bold'),local('Century Schoolbook');font-weight:700 900;font-style:normal}
-:root{--bg:#04090e;--surf:#081420;--card:#0d1e2c;--card2:#122030;--bord:rgba(50,190,143,0.16);--neon:#32be8f;--red:#ff3553;--orange:#ff9140;--blue:#3d8cff;--gold:#ffd060;--purple:#a855f7;--cyan:#06b6d4;--text:#e0f2ea;--text2:#b8d8cc;--muted:#5a8070;--fh:'C059','Source Serif 4','Playfair Display','Book Antiqua',Georgia,serif;--fb:'Inter','Segoe UI',system-ui,sans-serif}
+:root{--bg:#0f1726;--surf:#162033;--card:#1b263b;--card2:#22324a;--bord:rgba(148,163,184,0.18);--neon:#00a86b;--red:#e53935;--orange:#f57c00;--blue:#1976d2;--gold:#f9a825;--purple:#a855f7;--cyan:#06b6d4;--text:#e8eef8;--text2:#bfd0e4;--muted:#8ea3bd;--fh:'C059','Source Serif 4','Playfair Display','Book Antiqua',Georgia,serif;--fb:'Inter','Segoe UI',system-ui,sans-serif}
 *{margin:0;padding:0;box-sizing:border-box}
 html,body{height:100%;overflow:hidden}
 body{font-family:var(--fb);background:var(--bg);color:var(--text)}
@@ -87,12 +87,12 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;back
 .wrap{position:relative;z-index:1;height:100%;display:flex;flex-direction:column}
 
 /* TOPBAR */
-.topbar{background:rgba(8,20,32,0.94);border-bottom:1px solid var(--bord);backdrop-filter:blur(24px);padding:12px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0}
+.topbar{background:rgba(22,32,51,0.96);border-bottom:1px solid var(--bord);backdrop-filter:blur(24px);padding:12px 20px;display:flex;align-items:center;gap:12px;flex-shrink:0}
 .meeting-info h1{font-family:var(--fh);font-size:16px;font-weight:900;color:var(--text)}
 .meeting-info p{font-size:11px;color:var(--muted);margin-top:2px}
 .spacer{flex:1}
 .meeting-code{background:rgba(50,190,143,0.12);border:1px solid rgba(50,190,143,0.3);padding:6px 14px;border-radius:20px;font-family:monospace;font-size:12px;color:var(--neon);font-weight:700}
-.timer{font-family:monospace;font-size:14px;color:var(--text);padding:6px 12px;background:rgba(0,0,0,0.3);border-radius:10px}
+.timer{font-family:monospace;font-size:14px;color:var(--text);padding:6px 12px;background:rgba(15,23,38,0.72);border-radius:10px}
 .leave-btn{background:rgba(255,53,83,0.12);border:1px solid rgba(255,53,83,0.3);color:var(--red);padding:10px 18px;border-radius:10px;font-family:var(--fh);font-weight:900;cursor:pointer;transition:all 0.3s;font-size:12px}
 .leave-btn:hover{background:var(--red);color:#fff;transform:translateY(-2px)}
 
@@ -130,12 +130,12 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;back
 .chat-author{font-size:11px;font-weight:700;color:var(--neon);margin-bottom:2px}
 .chat-text{font-size:12px;color:var(--text2)}
 .chat-input{display:flex;gap:8px}
-.chat-input input{flex:1;padding:10px;background:rgba(0,0,0,0.3);border:1.5px solid var(--bord);border-radius:10px;color:var(--text);font-size:12px}
+.chat-input input{flex:1;padding:10px;background:rgba(15,23,38,0.72);border:1.5px solid var(--bord);border-radius:10px;color:var(--text);font-size:12px}
 .chat-input input:focus{outline:none;border-color:var(--neon)}
 .chat-send{background:var(--neon);color:#04090e;border:none;padding:10px 16px;border-radius:10px;font-weight:900;cursor:pointer}
 
 /* CONTROLS */
-.controls{background:rgba(8,20,32,0.94);border-top:1px solid var(--bord);backdrop-filter:blur(24px);padding:16px 20px;display:flex;justify-content:center;gap:12px;flex-shrink:0}
+.controls{background:rgba(22,32,51,0.96);border-top:1px solid var(--bord);backdrop-filter:blur(24px);padding:16px 20px;display:flex;justify-content:center;gap:12px;flex-shrink:0}
 .ctrl-btn{width:50px;height:50px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;cursor:pointer;transition:all 0.3s;border:none}
 .ctrl-mic{background:rgba(50,190,143,0.12);border:1px solid rgba(50,190,143,0.3);color:var(--neon)}
 .ctrl-mic:hover{background:var(--neon);color:#04090e}

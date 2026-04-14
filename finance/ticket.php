@@ -449,7 +449,7 @@ if (isset($_GET['download'])) {
 <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
 <style>
 @font-face{font-family:'C059';src:local('C059-Bold'),local('C059 Bold'),local('Century Schoolbook');font-weight:700 900;font-style:normal}
-:root{--bg:#04090e;--card:#0d1e2c;--bord:rgba(50,190,143,0.16);--neon:#32be8f;--red:#ff3553;--gold:#ffd060;--cyan:#06b6d4;--blue:#3d8cff;--text:#e0f2ea;--muted:#5a8070;--fh:'C059','Source Serif 4','Playfair Display','Book Antiqua',Georgia,serif;--fb:'Inter','Segoe UI',system-ui,sans-serif}
+:root{--bg:#0f1726;--card:#1b263b;--bord:rgba(148,163,184,0.18);--neon:#00a86b;--red:#e53935;--gold:#f9a825;--cyan:#06b6d4;--blue:#1976d2;--text:#e8eef8;--muted:#8ea3bd;--fh:'C059','Source Serif 4','Playfair Display','Book Antiqua',Georgia,serif;--fb:'Inter','Segoe UI',system-ui,sans-serif}
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:var(--fb);background:var(--bg);color:var(--text);min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;position:relative}
 body::before{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;background:radial-gradient(ellipse 65% 42% at 4% 8%,rgba(50,190,143,0.08) 0%,transparent 62%),radial-gradient(ellipse 52% 36% at 96% 88%,rgba(61,140,255,0.07) 0%,transparent 62%)}
@@ -487,7 +487,7 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;back
 .btn{padding:13px;border:none;border-radius:10px;font-weight:900;cursor:pointer;text-decoration:none;display:flex;align-items:center;justify-content:center;gap:8px;transition:all .2s;font-size:13px;font-family:var(--fh)}
 .btn:hover{transform:translateY(-2px)}
 .btn-primary{background:linear-gradient(135deg,var(--neon),var(--cyan));color:#04090e}
-.btn-secondary{background:rgba(255,255,255,0.05);border:1.5px solid var(--bord);color:#b8d8cc}
+.btn-secondary{background:rgba(255,255,255,0.04);border:1.5px solid var(--bord);color:#b8d8cc}
 .btn-success{background:linear-gradient(135deg,var(--neon),var(--cyan));color:#04090e;grid-column:1/-1}
 .footer{text-align:center;color:var(--muted);font-size:12px;margin-top:20px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.06)}
 @media print{body{background:#fff}.actions,.footer{display:none}}

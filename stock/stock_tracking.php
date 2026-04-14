@@ -280,9 +280,13 @@ if (isset($_GET['export_global']) && $location_set) {
 
         /* Couleur statut */
         $sc = $statut==='RUPTURE'?'FFff3553':($statut==='ALERTE'?'FFffd060':'FF32be8f');
-        $sh->getStyle("J$row")->getFont()->getColor()->setARGB($sc)->setBold(true);
+        $sh->getStyle("J$row")->getFont()->getColor()->setARGB($sc);
+        $sh->getStyle("J$row")->getFont()->setBold(true);
         /* Ventes annulées en rouge si > 0 */
-        if ($ann) $sh->getStyle("E$row")->getFont()->getColor()->setARGB('FFff3553')->setBold(true);
+        if ($ann) {
+            $sh->getStyle("E$row")->getFont()->getColor()->setARGB('FFff3553');
+            $sh->getStyle("E$row")->getFont()->setBold(true);
+        }
         $row++;
     }
 
@@ -500,15 +504,15 @@ if ($location_set) {
 <style>
 @font-face{font-family:'C059';src:local('C059-Bold'),local('C059 Bold'),local('Century Schoolbook');font-weight:700 900;}
 :root{
-    --bg:#04090e;--surf:#081420;--card:#0d1e2c;--card2:#112030;
-    --bord:rgba(50,190,143,0.16);
-    --neon:#32be8f;--neon2:#19ffa3;
-    --red:#ff3553;--orange:#ff9140;--blue:#3d8cff;--gold:#ffd060;
+    --bg:#0f1726;--surf:#162033;--card:#1b263b;--card2:#22324a;
+    --bord:rgba(148,163,184,0.18);
+    --neon:#00a86b;--neon2:#00c87a;
+    --red:#e53935;--orange:#f57c00;--blue:#1976d2;--gold:#f9a825;
     --purple:#a855f7;--teal:#06b6d4;
-    --text:#e0f2ea;--text2:#b8d8cc;--muted:#5a8070;
-    --glow:0 0 26px rgba(50,190,143,0.45);
-    --glow-r:0 0 26px rgba(255,53,83,0.45);
-    --glow-gold:0 0 26px rgba(255,208,96,0.4);
+    --text:#e8eef8;--text2:#bfd0e4;--muted:#8ea3bd;
+    --glow:0 8px 24px rgba(0,168,107,0.18);
+    --glow-r:0 8px 24px rgba(229,57,53,0.18);
+    --glow-gold:0 8px 24px rgba(249,168,37,0.18);
     --glow-blue:0 0 26px rgba(61,140,255,0.4);
     --fh:'C059','Source Serif 4','Playfair Display','Book Antiqua',Georgia,serif;
     --fb:'Inter','Segoe UI',system-ui,sans-serif;
@@ -576,7 +580,7 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
     transition:all .3s;appearance:none;-webkit-appearance:none;width:100%;}
 .f-input::placeholder{color:var(--muted);}
 .f-input:focus,.f-select:focus{outline:none;border-color:var(--neon);box-shadow:var(--glow);background:rgba(50,190,143,.05);}
-.f-select option{background:#0d1e2c;color:var(--text);}
+.f-select option{background:#1b263b;color:var(--text);}
 
 /* ── PANEL ── */
 .panel{background:var(--card);border:1px solid var(--bord);border-radius:18px;
@@ -1219,11 +1223,11 @@ if(tc){
         ]},
         options:{responsive:true,maintainAspectRatio:false,
             plugins:{legend:{position:'top',labels:{padding:16,usePointStyle:true,color:'#b8d8cc'}},
-                tooltip:{backgroundColor:'rgba(8,20,32,0.97)',padding:14,cornerRadius:10,
+                tooltip:{backgroundColor:'rgba(22,32,51,0.98)',padding:14,cornerRadius:10,
                     callbacks:{label:ctx=>`${ctx.dataset.label}: ${ctx.parsed.y} unités`}}},
             scales:{
-                x:{grid:{color:'rgba(255,255,255,0.04)'},ticks:{color:'#5a8070'}},
-                y:{beginAtZero:true,grid:{color:'rgba(255,255,255,0.04)'},ticks:{color:'#5a8070'}}
+                x:{grid:{color:'rgba(148,163,184,0.12)'},ticks:{color:'#8a9fad'}},
+                y:{beginAtZero:true,grid:{color:'rgba(148,163,184,0.12)'},ticks:{color:'#8a9fad'}}
             }
         }
     });

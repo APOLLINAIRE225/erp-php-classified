@@ -283,10 +283,10 @@ try {
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
 <style>
 :root{
-  --bg:#04090e;--surf:#07121c;--card:#0c1e2e;--card2:#0f2236;
+  --bg:#0f1726;--surf:#162033;--card:#1b263b;--card2:#22324a;
   --bord:rgba(50,190,143,.12);--bord2:rgba(50,190,143,.07);
-  --neon:#32be8f;--neon2:#1aff9c;--red:#ff3553;--gold:#ffd060;
-  --cyan:#06b6d4;--blue:#3d8cff;--purple:#a78bfa;--orange:#ff8c42;
+  --neon:#00a86b;--neon2:#1aff9c;--red:#e53935;--gold:#f9a825;
+  --cyan:#06b6d4;--blue:#1976d2;--purple:#a78bfa;--orange:#ff8c42;
   --text:#e2f4ed;--text2:#aecfbf;--muted:#466258;
   --gn:0 0 22px rgba(50,190,143,.35);--gr:0 0 22px rgba(255,53,83,.35);
   --fd:'Syne',sans-serif;--fb:'DM Sans',sans-serif;

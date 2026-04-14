@@ -519,26 +519,26 @@ $csrf             = $_SESSION['csrf_token'];
    DARK NEON — ESPERANCE H2O — même charte admin_nasa
 ═══════════════════════════════════════════════════════ */
 :root {
-    --bg:     #04090e;
-    --surf:   #081420;
-    --card:   #0d1e2c;
-    --card2:  #122030;
+    --bg:#0f1726;
+    --surf:#162033;
+    --card:#1b263b;
+    --card2:#22324a;
     --bord:   rgba(50,190,143,0.14);
     --bord2:  rgba(50,190,143,0.30);
-    --neon:   #32be8f;
-    --neon2:  #19ffa3;
-    --red:    #ff3553;
-    --orange: #ff9140;
-    --blue:   #3d8cff;
-    --gold:   #ffd060;
+    --neon:#00a86b;
+    --neon2:#00c87a;
+    --red:#e53935;
+    --orange:#f57c00;
+    --blue:#1976d2;
+    --gold:#f9a825;
     --purple: #a855f7;
     --cyan:   #06b6d4;
     --pink:   #ec4899;
-    --text:   #e0f2ea;
-    --text2:  #b8d8cc;
-    --muted:  #5a8070;
-    --glow:   0 0 26px rgba(50,190,143,0.45);
-    --glow-r: 0 0 26px rgba(255,53,83,0.45);
+    --text:#e8eef8;
+    --text2:#bfd0e4;
+    --muted:#8ea3bd;
+    --glow:0 8px 24px rgba(0,168,107,0.18);
+    --glow-r:0 8px 24px rgba(229,57,53,0.18);
     --fh: 'Playfair Display', Georgia, serif;
     --fb: 'Inter', 'Segoe UI', system-ui, sans-serif;
 }
@@ -591,7 +591,7 @@ body::after {
 /* ══ TOPBAR ══ */
 .topbar {
     display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;
-    background:rgba(8,20,32,0.96);border:1px solid var(--bord);border-radius:18px;
+    background:rgba(22,32,51,0.96);border:1px solid var(--bord);border-radius:18px;
     padding:16px 24px;margin-bottom:12px;backdrop-filter:blur(28px);
     box-shadow:0 4px 32px rgba(0,0,0,0.4);position:relative;overflow:hidden;
     animation:fadeUp .4s ease;
@@ -626,7 +626,7 @@ body::after {
 /* ══ TAB NAV ══ */
 .tab-nav {
     display:flex;align-items:center;flex-wrap:wrap;gap:6px;
-    background:rgba(8,20,32,0.88);border:1px solid var(--bord);border-radius:14px;
+    background:rgba(27,38,59,0.88);border:1px solid var(--bord);border-radius:14px;
     padding:10px 16px;margin-bottom:16px;backdrop-filter:blur(20px);
 }
 .tab-lnk {
@@ -657,7 +657,7 @@ body::after {
 .alert-sub  { font-size:12px;opacity:.8;margin-top:4px; }
 .alert-pill {
     display:inline-block;margin-top:6px;margin-right:6px;padding:3px 10px;border-radius:8px;
-    background:rgba(255,255,255,0.08);font-family:var(--fh);font-size:11px;font-weight:900;
+    background:rgba(255,255,255,0.06);font-family:var(--fh);font-size:11px;font-weight:900;
 }
 
 /* ══ KPI STRIP ══ */
@@ -700,7 +700,7 @@ body::after {
 .search-wrap i { position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--muted);font-size:13px; }
 .search-wrap input {
     width:100%;padding:9px 12px 9px 36px;
-    background:rgba(0,0,0,0.3);border:1.5px solid var(--bord);border-radius:10px;
+    background:rgba(15,23,38,0.72);border:1.5px solid var(--bord);border-radius:10px;
     color:var(--text);font-family:var(--fb);font-size:13px;transition:all .28s;
 }
 .search-wrap input:focus { outline:none;border-color:var(--purple);box-shadow:0 0 12px rgba(168,85,247,0.18); }
@@ -800,7 +800,7 @@ tbody tr:last-child td { border-bottom:none; }
     outline:none;border-color:var(--neon);box-shadow:0 0 14px rgba(50,190,143,0.18);
 }
 .fg input::placeholder,.fg textarea::placeholder { color:var(--muted); }
-.fg select option { background:#0d1e2c;color:var(--text); }
+.fg select option { background:#1b263b;color:var(--text); }
 .fg textarea { resize:vertical;min-height:72px; }
 input[type="checkbox"] { width:auto;cursor:pointer; }
 
