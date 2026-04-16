@@ -9,7 +9,14 @@ require_once dirname(__DIR__, 2) . '/_php_classified/bootstrap_paths.php';
 
 session_start();
 require_once APP_ROOT . '/app/core/DB.php';
+require_once APP_ROOT . '/app/core/Auth.php';
+require_once APP_ROOT . '/app/core/Middleware.php';
 use App\Core\DB;
+use App\Core\Auth;
+use App\Core\Middleware;
+
+Auth::check();
+Middleware::role(['developer', 'admin']);
 
 $pdo = DB::getConnection();
 

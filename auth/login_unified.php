@@ -7,6 +7,7 @@ ini_set('display_errors', 0);
 error_reporting(E_ALL);
 
 require_once APP_ROOT . '/app/core/DB.php';
+require_once PROJECT_ROOT . '/messaging/app_alerts.php';
 use App\Core\DB;
 
 $pdo = DB::getConnection();
@@ -121,6 +122,31 @@ function logAttempt(PDO $pdo, string $ip): void {
     } catch (Exception $e) {}
 }
 
+function notifyUnifiedLogin(PDO $pdo, string $accountType, string $displayName, string $ip, string $redirectUrl, ?int $actorUserId = null): void
+{
+    try {
+        $title = 'Nouvelle connexion';
+        $body = sprintf(
+            '%s s’est connecté (%s) · IP %s',
+            $displayName !== '' ? $displayName : 'Utilisateur',
+            $accountType,
+            $ip
+        );
+        appAlertNotifyRoles($pdo, appAlertOpsRoles(), [
+            'title' => $title,
+            'body' => mb_strimwidth($body, 0, 180, '…', 'UTF-8'),
+            'url' => $redirectUrl,
+            'tag' => 'login-' . strtolower($accountType),
+            'unread' => 1,
+        ], [
+            'event_type' => 'login',
+            'actor_user_id' => $actorUserId,
+        ]);
+    } catch (Throwable $e) {
+        error_log('[LOGIN ALERT] ' . $e->getMessage());
+    }
+}
+
 $error         = '';
 $show_register = false;
 $action        = cl($_POST['action'] ?? '', 30);
@@ -153,6 +179,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'unified_login') {
             $_SESSION['username']     = $row['username'];
             $_SESSION['role']         = $row['role'];
             $_SESSION['account_type'] = 'admin';
+            notifyUnifiedLogin($pdo, 'admin', $row['username'] . ' / ' . $row['role'], $client_ip, project_url('dashboard/index.php'), (int)$row['id']);
             $found = true;
             header('Location: ' . project_url('dashboard/index.php')); exit;
         }
@@ -170,6 +197,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'unified_login') {
                 $_SESSION['employee_id']   = (int)$row['id'];
                 $_SESSION['employee_name'] = $row['full_name'];
                 $_SESSION['account_type']  = 'employee';
+                notifyUnifiedLogin($pdo, 'employee', $row['full_name'], $client_ip, project_url('hr/employee_portal.php'));
                 $found = true;
                 header('Location: ' . project_url('hr/employee_portal.php')); exit;
             }
@@ -188,6 +216,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'unified_login') {
                 $_SESSION['order_company_id'] = (int)($client['company_id'] ?? 0);
                 $_SESSION['order_city_id'] = (int)($client['city_id'] ?? 0);
                 $_SESSION['account_type'] = 'client';
+                notifyUnifiedLogin($pdo, 'client', $client['name'] . ' / ' . $client['phone'], $client_ip, project_url('orders/commande_mobile.php'));
                 $found = true;
                 header('Location: ' . project_url('orders/commande_mobile.php')); exit;
             }

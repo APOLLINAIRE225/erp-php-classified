@@ -1,0 +1,48 @@
+{
+  "project_info": {
+    "project_number": "983002101005",
+    "project_id": "coredesk-bcce8",
+    "storage_bucket": "coredesk-bcce8.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:983002101005:android:fc403f7e07091b14acec44",
+        "android_client_info": {
+          "package_name": "cloud.coredesk.esperance.messaging"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCgnh8jAE1a8XcoBSlSyq8rBZEzstnvLyI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:983002101005:android:18d0d149eb5920c3acec44",
+        "android_client_info": {
+          "package_name": "com.esperance.com"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCgnh8jAE1a8XcoBSlSyq8rBZEzstnvLyI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -12,11 +12,12 @@ android {
         applicationId = "cloud.coredesk.esperance.messaging"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.0.1"
 
         buildConfigField("String", "BASE_URL", "\"https://esperanceh20.com/messaging/messagerie.php\"")
         buildConfigField("String", "REGISTER_TOKEN_URL", "\"https://esperanceh20.com/api/mobile/register_fcm_token.php\"")
+        buildConfigField("String", "REPORT_EVENT_URL", "\"https://esperanceh20.com/api/mobile/report_app_event.php\"")
         buildConfigField("String", "PUSH_CHANNEL_ID", "\"messages_high_priority\"")
         buildConfigField("String", "PUSH_CHANNEL_NAME", "\"Messages prioritaires\"")
     }

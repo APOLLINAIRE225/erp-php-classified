@@ -10,7 +10,25 @@ header('Content-Type: application/json');
 header('Cache-Control: no-cache, must-revalidate');
 
 require_once APP_ROOT . '/app/core/DB.php';
+require_once APP_ROOT . '/app/core/Auth.php';
+require_once APP_ROOT . '/app/core/Middleware.php';
 use App\Core\DB;
+use App\Core\Auth;
+use App\Core\Middleware;
+
+try {
+    Auth::check();
+    Middleware::role(['developer', 'admin', 'manager', 'informaticien', 'Superviseur', 'Directrice']);
+} catch (Throwable $e) {
+    http_response_code(401);
+    echo json_encode([
+        'success' => false,
+        'error' => 'Session requise',
+        'count' => 0,
+        'recent' => [],
+    ]);
+    exit;
+}
 
 try {
     $pdo = DB::getConnection();

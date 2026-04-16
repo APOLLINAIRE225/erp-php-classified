@@ -40,6 +40,19 @@ function jErr(string $m, int $c=400):void{
     exit;
 }
 function eH(?string $s):string{ return htmlspecialchars($s??'',ENT_QUOTES|ENT_SUBSTITUTE,'UTF-8'); }
+function dispatchChatNotifications(array $userIds, array $payload, string $context): void {
+    try {
+        webpushSendToUsers($userIds, $payload);
+    } catch (Throwable $e) {
+        error_log('[WEBPUSH ' . $context . '] ' . $e->getMessage());
+    }
+
+    try {
+        fcmSendToUsers($userIds, $payload);
+    } catch (Throwable $e) {
+        error_log('[FCM ' . $context . '] ' . $e->getMessage());
+    }
+}
 
 function presenceStorePath(): string {
     return PROJECT_ROOT . '/messaging/runtime/presence.json';
@@ -316,25 +329,14 @@ if ($isAjaxRequest && $isMutationRequest) {
         if(!$ru) jErr('Destinataire introuvable id='.$rid);
         $pdo->prepare("INSERT INTO chat_private_messages(sender_id,sender_name,recipient_id,recipient_name,content,message_type,created_at) VALUES(:sid,:sn,:rid,:rn,:c,'text',NOW())")
             ->execute([':sid'=>$me_id,':sn'=>$me_name,':rid'=>$rid,':rn'=>$ru['username'],':c'=>$txt]);
-        try {
-            webpushSendToUsers([$rid], [
-                'title' => '💬 ' . $me_name,
-                'body' => mb_strimwidth($txt, 0, 110, '…', 'UTF-8'),
-                'tag' => 'priv-'.$me_id.'-'.$rid,
-                'url' => project_url('messaging/messagerie.php'),
-                'conversation' => ['type' => 'priv', 'id' => $me_id],
-            ]);
-            fcmSendToUsers([$rid], [
-                'title' => '💬 ' . $me_name,
-                'body' => mb_strimwidth($txt, 0, 110, '…', 'UTF-8'),
-                'tag' => 'priv-'.$me_id.'-'.$rid,
-                'url' => project_url('messaging/messagerie.php'),
-                'conversation' => ['type' => 'priv', 'id' => $me_id],
-                'unread' => 1,
-            ]);
-        } catch (Throwable $e) {
-            error_log('[WEBPUSH send_message] ' . $e->getMessage());
-        }
+        dispatchChatNotifications([$rid], [
+            'title' => '💬 ' . $me_name,
+            'body' => mb_strimwidth($txt, 0, 110, '…', 'UTF-8'),
+            'tag' => 'priv-'.$me_id.'-'.$rid,
+            'url' => project_url('messaging/messagerie.php'),
+            'conversation' => ['type' => 'priv', 'id' => $me_id],
+            'unread' => 1,
+        ], 'send_message');
         echo json_encode(['ok'=>true]); exit;
     }
 
@@ -373,31 +375,20 @@ if ($isAjaxRequest && $isMutationRequest) {
         if(!$ru) jErr('Destinataire introuvable id='.$rid);
         $pdo->prepare("INSERT INTO chat_private_messages(sender_id,sender_name,recipient_id,recipient_name,content,message_type,file_path,file_name,created_at) VALUES(:sid,:sn,:rid,:rn,:c,:mt,:fp,:fn2,NOW())")
             ->execute([':sid'=>$me_id,':sn'=>$me_name,':rid'=>$rid,':rn'=>$ru['username'],':c'=>$f['name'],':mt'=>$mt,':fp'=>$wp,':fn2'=>$f['name']]);
-        try {
-            $label = match($mt) {
-                'image' => '📷 Image',
-                'audio' => '🎤 Message vocal',
-                'video' => '🎬 Vidéo',
-                default => '📎 ' . $f['name'],
-            };
-            webpushSendToUsers([$rid], [
-                'title' => '💬 ' . $me_name,
-                'body' => $label,
-                'tag' => 'priv-media-'.$me_id.'-'.$rid,
-                'url' => project_url('messaging/messagerie.php'),
-                'conversation' => ['type' => 'priv', 'id' => $me_id],
-            ]);
-            fcmSendToUsers([$rid], [
-                'title' => '💬 ' . $me_name,
-                'body' => $label,
-                'tag' => 'priv-media-'.$me_id.'-'.$rid,
-                'url' => project_url('messaging/messagerie.php'),
-                'conversation' => ['type' => 'priv', 'id' => $me_id],
-                'unread' => 1,
-            ]);
-        } catch (Throwable $e) {
-            error_log('[WEBPUSH upload_file] ' . $e->getMessage());
-        }
+        $label = match($mt) {
+            'image' => '📷 Image',
+            'audio' => '🎤 Message vocal',
+            'video' => '🎬 Vidéo',
+            default => '📎 ' . $f['name'],
+        };
+        dispatchChatNotifications([$rid], [
+            'title' => '💬 ' . $me_name,
+            'body' => $label,
+            'tag' => 'priv-media-'.$me_id.'-'.$rid,
+            'url' => project_url('messaging/messagerie.php'),
+            'conversation' => ['type' => 'priv', 'id' => $me_id],
+            'unread' => 1,
+        ], 'upload_file');
         echo json_encode(['ok'=>true,'path'=>$wp,'type'=>$mt]); exit;
     }
 
@@ -441,28 +432,17 @@ if ($isAjaxRequest && $isMutationRequest) {
         $st->execute([':g'=>$gid,':me'=>$me_id]); if(!$st->fetch()) jErr('Accès refusé',403);
         $pdo->prepare("INSERT INTO chat_group_messages(group_id,sender_id,sender_name,content,message_type,created_at) VALUES(:g,:sid,:sn,:c,'text',NOW())")
             ->execute([':g'=>$gid,':sid'=>$me_id,':sn'=>$me_name,':c'=>$txt]);
-        try {
-            $st = $pdo->prepare("SELECT user_id FROM chat_group_members WHERE group_id=:g AND user_id!=:me");
-            $st->execute([':g'=>$gid, ':me'=>$me_id]);
-            $targets = array_map('intval', array_column($st->fetchAll(PDO::FETCH_ASSOC), 'user_id'));
-            webpushSendToUsers($targets, [
-                'title' => '👥 ' . $me_name,
-                'body' => mb_strimwidth($txt, 0, 110, '…', 'UTF-8'),
-                'tag' => 'group-'.$gid,
-                'url' => project_url('messaging/messagerie.php'),
-                'conversation' => ['type' => 'grp', 'id' => $gid],
-            ]);
-            fcmSendToUsers($targets, [
-                'title' => '👥 ' . $me_name,
-                'body' => mb_strimwidth($txt, 0, 110, '…', 'UTF-8'),
-                'tag' => 'group-'.$gid,
-                'url' => project_url('messaging/messagerie.php'),
-                'conversation' => ['type' => 'grp', 'id' => $gid],
-                'unread' => 1,
-            ]);
-        } catch (Throwable $e) {
-            error_log('[WEBPUSH send_group_message] ' . $e->getMessage());
-        }
+        $st = $pdo->prepare("SELECT user_id FROM chat_group_members WHERE group_id=:g AND user_id!=:me");
+        $st->execute([':g'=>$gid, ':me'=>$me_id]);
+        $targets = array_map('intval', array_column($st->fetchAll(PDO::FETCH_ASSOC), 'user_id'));
+        dispatchChatNotifications($targets, [
+            'title' => '👥 ' . $me_name,
+            'body' => mb_strimwidth($txt, 0, 110, '…', 'UTF-8'),
+            'tag' => 'group-'.$gid,
+            'url' => project_url('messaging/messagerie.php'),
+            'conversation' => ['type' => 'grp', 'id' => $gid],
+            'unread' => 1,
+        ], 'send_group_message');
         echo json_encode(['ok'=>true]); exit;
     }
     if ($act==='upload_group_file'){
@@ -489,34 +469,23 @@ if ($isAjaxRequest && $isMutationRequest) {
         $mt = detectMediaType($ext, $f['name']);
         $pdo->prepare("INSERT INTO chat_group_messages(group_id,sender_id,sender_name,content,message_type,file_path,file_name,created_at) VALUES(:g,:sid,:sn,:c,:mt,:fp,:fn2,NOW())")
             ->execute([':g'=>$gid,':sid'=>$me_id,':sn'=>$me_name,':c'=>$f['name'],':mt'=>$mt,':fp'=>$wp,':fn2'=>$f['name']]);
-        try {
-            $st = $pdo->prepare("SELECT user_id FROM chat_group_members WHERE group_id=:g AND user_id!=:me");
-            $st->execute([':g'=>$gid, ':me'=>$me_id]);
-            $targets = array_map('intval', array_column($st->fetchAll(PDO::FETCH_ASSOC), 'user_id'));
-            $label = match($mt) {
-                'image' => '📷 Image',
-                'audio' => '🎤 Audio',
-                'video' => '🎬 Vidéo',
-                default => '📎 ' . $f['name'],
-            };
-            webpushSendToUsers($targets, [
-                'title' => '👥 ' . $me_name,
-                'body' => $label,
-                'tag' => 'group-media-'.$gid,
-                'url' => project_url('messaging/messagerie.php'),
-                'conversation' => ['type' => 'grp', 'id' => $gid],
-            ]);
-            fcmSendToUsers($targets, [
-                'title' => '👥 ' . $me_name,
-                'body' => $label,
-                'tag' => 'group-media-'.$gid,
-                'url' => project_url('messaging/messagerie.php'),
-                'conversation' => ['type' => 'grp', 'id' => $gid],
-                'unread' => 1,
-            ]);
-        } catch (Throwable $e) {
-            error_log('[WEBPUSH upload_group_file] ' . $e->getMessage());
-        }
+        $st = $pdo->prepare("SELECT user_id FROM chat_group_members WHERE group_id=:g AND user_id!=:me");
+        $st->execute([':g'=>$gid, ':me'=>$me_id]);
+        $targets = array_map('intval', array_column($st->fetchAll(PDO::FETCH_ASSOC), 'user_id'));
+        $label = match($mt) {
+            'image' => '📷 Image',
+            'audio' => '🎤 Audio',
+            'video' => '🎬 Vidéo',
+            default => '📎 ' . $f['name'],
+        };
+        dispatchChatNotifications($targets, [
+            'title' => '👥 ' . $me_name,
+            'body' => $label,
+            'tag' => 'group-media-'.$gid,
+            'url' => project_url('messaging/messagerie.php'),
+            'conversation' => ['type' => 'grp', 'id' => $gid],
+            'unread' => 1,
+        ], 'upload_group_file');
         echo json_encode(['ok'=>true,'path'=>$wp,'type'=>$mt]); exit;
     }
     if ($act==='get_group_members'){
@@ -1342,6 +1311,7 @@ html,body{height:100%;overflow:hidden;font-family:'DM Sans',sans-serif;backgroun
     <div class="cam-rec-timer" id="cam-rec-timer">⏺ 0:00</div>
     <div class="cam-actions">
       <button class="cam-btn cam-capture" id="cam-capture"><i class="fas fa-camera"></i> Capturer</button>
+      <button class="cam-btn" id="cam-switch"><i class="fas fa-rotate"></i> Basculer</button>
       <button class="cam-btn cam-retake" id="cam-retake" style="display:none"><i class="fas fa-redo"></i> Reprendre</button>
       <button class="cam-btn cam-send" id="cam-send" style="display:none"><i class="fas fa-paper-plane"></i> Envoyer</button>
       <button class="cam-btn cam-rec-start" id="cam-rec-start" style="display:none"><i class="fas fa-circle"></i> Enregistrer</button>
@@ -2115,11 +2085,12 @@ async function sendPendingFile(){
    mais le code continuait sans attendre → camBlob était null.
    SOLUTION: On convertit le dataURL en Blob directement (synchrone).
 ══════════════════════════════════════════════════════════════════════ */
-let camStream=null, camBlob=null, camMode='photo';
+let camStream=null, camBlob=null, camMode='photo', camFacing='user';
 let camVideoRecorder=null, camVideoChunks=[], camRecTimer=null, camRecSecs=0;
 
 q('#tab-photo').addEventListener('click',()=>{ camMode='photo'; updateCamUI(); });
 q('#tab-video').addEventListener('click',()=>{ camMode='video'; updateCamUI(); });
+q('#cam-switch').addEventListener('click',toggleCameraFacing);
 
 function updateCamUI(){
   q('#tab-photo').classList.toggle('on',camMode==='photo');
@@ -2139,19 +2110,40 @@ q('#cam-rec-stop').addEventListener('click',stopVideoRecording);
 async function openCamera(){
   if(!current){ toast('Choisissez un contact d\'abord',false); return; }
   try {
-    camStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:true});
-    q('#cam-video').srcObject=camStream;
-    q('#cam-video').style.display='block';
-    q('#cam-preview').style.display='none';
-    q('#cam-video-preview').style.display='none';
-    q('#cam-retake').style.display='none';
-    q('#cam-send').style.display='none';
-    q('#cam-rec-stop').style.display='none';
-    q('#cam-rec-timer').classList.remove('show');
-    camBlob=null;
-    updateCamUI();
+    await startCameraStream();
     q('#cam-modal-bg').classList.add('show');
   } catch(e){ toast('Caméra inaccessible: '+e.message,false); }
+}
+
+async function startCameraStream(){
+  if(camVideoRecorder && camVideoRecorder.state!=='inactive'){
+    camVideoRecorder.stop();
+  }
+  clearInterval(camRecTimer);
+  if(camStream) camStream.getTracks().forEach(t=>t.stop());
+  camStream=await navigator.mediaDevices.getUserMedia({video:{facingMode:camFacing},audio:false});
+  q('#cam-video').srcObject=camStream;
+  q('#cam-video').style.display='block';
+  q('#cam-preview').style.display='none';
+  q('#cam-video-preview').style.display='none';
+  q('#cam-retake').style.display='none';
+  q('#cam-send').style.display='none';
+  q('#cam-rec-stop').style.display='none';
+  q('#cam-rec-timer').classList.remove('show');
+  q('#cam-switch').style.display='flex';
+  camBlob=null;
+  updateCamUI();
+}
+
+async function toggleCameraFacing(){
+  camFacing = camFacing==='user' ? 'environment' : 'user';
+  try {
+    await startCameraStream();
+    toast(camFacing==='environment' ? 'Caméra arrière activée' : 'Caméra avant activée');
+  } catch(e) {
+    camFacing = camFacing==='user' ? 'environment' : 'user';
+    toast('Changement de caméra impossible: '+e.message,false);
+  }
 }
 
 /**
@@ -2204,16 +2196,24 @@ function retakePhoto(){
   q('#cam-retake').style.display='none';
   q('#cam-send').style.display='none';
   // Redémarrer la caméra pour reprendre
-  navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:true}).then(stream=>{
-    camStream=stream;
-    q('#cam-video').srcObject=stream;
-    q('#cam-video').style.display='block';
-    updateCamUI();
-  }).catch(e=>toast('Caméra: '+e.message,false));
+  startCameraStream().catch(e=>toast('Caméra: '+e.message,false));
 }
 
 async function startVideoRecording(){
   if(!camStream){ toast('Caméra non initialisée',false); return; }
+
+  if(!camStream.getAudioTracks().length){
+    try {
+      const audioStream = await navigator.mediaDevices.getUserMedia({audio:true});
+      const videoTracks = camStream.getVideoTracks();
+      const audioTracks = audioStream.getAudioTracks();
+      camStream = new MediaStream([...videoTracks, ...audioTracks]);
+      q('#cam-video').srcObject = camStream;
+    } catch(e) {
+      toast('Micro non disponible pour la vidéo: '+e.message,false);
+      return;
+    }
+  }
 
   // Choisir le meilleur codec disponible
   const mimeTypes = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm','video/mp4'];
@@ -2480,12 +2480,14 @@ function requestNotifPermission(){
     Notification.requestPermission().then(async p=>{
       notifPermission=(p==='granted');
       if(notifPermission){
+        try{ window.AndroidBridge?.syncPushToken?.(window.location.href); }catch(e){}
         await ensurePushSubscription();
         toast('Notifications activées');
       }
     });
   } else if(Notification.permission==='granted'){
     notifPermission=true;
+    try{ window.AndroidBridge?.syncPushToken?.(window.location.href); }catch(e){}
     ensurePushSubscription();
   }
 }
@@ -2738,6 +2740,7 @@ setInterval(()=>{
   }
 },10000);
 runDiag();
+try{ window.AndroidBridge?.syncPushToken?.(window.location.href); }catch(e){}
 document.addEventListener('click', requestNotifPermission, {once:true});
 document.addEventListener('visibilitychange',()=>{
   heartbeatPresence(document.hidden ? 'away' : 'online');

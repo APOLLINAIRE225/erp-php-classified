@@ -16,6 +16,7 @@ error_reporting(E_ALL);
 require_once APP_ROOT . '/app/core/DB.php';
 require_once APP_ROOT . '/app/core/Auth.php';
 require_once APP_ROOT . '/app/core/Middleware.php';
+require_once PROJECT_ROOT . '/messaging/app_alerts.php';
 require APP_ROOT . '/vendor/autoload.php';
 require APP_ROOT . '/fpdf186/fpdf.php';
 
@@ -133,6 +134,21 @@ if (isset($_POST['submit_appro_request']) && $location_set) {
         $pname = $st2->fetchColumn();
         logApproHistory($pdo,$req_id,$user_id,'SOUMISSION',"Demande créée par $user_name (rôle: $user_role) — Produit: $pname — Qté: $quantity $unit_type — Note: $note");
         logAction($pdo,$user_id,'APPRO_REQUEST',"Demande appro: $pname x$quantity ($unit_type)",null,null,null,$quantity);
+        try {
+            appAlertNotifyRoles($pdo, appAlertOpsRoles(), [
+                'title' => 'Nouvelle demande d’approvisionnement',
+                'body' => mb_strimwidth("$user_name demande $quantity $unit_type de $pname", 0, 180, '…', 'UTF-8'),
+                'url' => project_url('finance/caisse_complete_enhanced.php?view=appro&appro_view=list'),
+                'tag' => 'appro-request-' . $req_id,
+                'unread' => 1,
+            ], [
+                'event_type' => 'appro_request',
+                'event_key' => 'appro-request-' . $req_id,
+                'actor_user_id' => (int)$user_id,
+            ]);
+        } catch (Throwable $e) {
+            error_log('[APPRO ALERT] ' . $e->getMessage());
+        }
         $success_message = "✅ Demande d'appro envoyée ! L'admin va recevoir votre demande pour <strong>$pname</strong>.";
     } else { $error_message = "❌ Veuillez sélectionner un produit et une quantité valide."; }
     }
@@ -186,6 +202,41 @@ if (isset($_POST['confirm_appro_request']) && $location_set) {
                 logApproHistory($pdo,$req_id,$user_id,'CONFIRMATION',"✅ Confirmé par $user_name — Stock +{$req['quantity']} {$req['unit_type']} [{$req['product_name']}] — Note: $admin_note");
                 logAction($pdo,$user_id,'APPRO_CONFIRMED',"✅ Appro #$req_id confirmée — {$req['product_name']} +{$req['quantity']} {$req['unit_type']}",$req['product_id'],null,null,$req['quantity']);
                 $pdo->commit();
+                try {
+                    appAlertNotifyRoles($pdo, appAlertOpsRoles(), [
+                        'title' => 'Approvisionnement confirmé',
+                        'body' => mb_strimwidth(
+                            sprintf(
+                                '✅ Demande #%d confirmée: %s +%s %s (demandeur: %s)',
+                                $req_id,
+                                (string)$req['product_name'],
+                                rtrim(rtrim((string)$req['quantity'], '0'), '.'),
+                                (string)$req['unit_type'],
+                                (string)$req['requester_name']
+                            ),
+                            0,
+                            180,
+                            '…',
+                            'UTF-8'
+                        ),
+                        'url' => project_url('finance/caisse_complete_enhanced.php?view=appro&appro_view=history&req_id=' . $req_id),
+                        'tag' => 'appro-confirmed-' . $req_id,
+                        'unread' => 1,
+                    ], [
+                        'event_type' => 'appro_request_confirmed',
+                        'event_key' => 'appro-request-confirmed-' . $req_id,
+                        'actor_user_id' => (int)$user_id,
+                        'request_id' => (int)$req_id,
+                        'product_id' => (int)$req['product_id'],
+                        'product_name' => (string)$req['product_name'],
+                        'quantity' => (float)$req['quantity'],
+                        'unit_type' => (string)$req['unit_type'],
+                        'requester_name' => (string)$req['requester_name'],
+                        'admin_note' => (string)$admin_note,
+                    ]);
+                } catch (Throwable $e) {
+                    error_log('[APPRO CONFIRM ALERT] ' . $e->getMessage());
+                }
                 $success_message = "✅ Appro <strong>#$req_id</strong> confirmée ! Stock mis à jour (+{$req['quantity']} {$req['unit_type']} de <strong>{$req['product_name']}</strong>).";
             } catch (Exception $e) { $pdo->rollBack(); $error_message = "❌ Erreur : " . $e->getMessage(); }
         } else { $error_message = "❌ Demande introuvable ou déjà traitée."; }
@@ -207,6 +258,40 @@ if (isset($_POST['reject_appro_request']) && $location_set) {
                 $pdo->prepare("UPDATE appro_requests SET status='rejetee',admin_id=?,admin_note=?,updated_at=NOW() WHERE id=?")->execute([$user_id,$admin_note,$req_id]);
                 logApproHistory($pdo,$req_id,$user_id,'REJET',"❌ Rejeté par $user_name — Motif: $admin_note — Produit: {$req['product_name']}");
                 logAction($pdo,$user_id,'APPRO_REJECTED',"❌ Appro #$req_id rejetée — {$req['product_name']} — Motif: $admin_note");
+                try {
+                    appAlertNotifyRoles($pdo, appAlertOpsRoles(), [
+                        'title' => 'Approvisionnement rejeté',
+                        'body' => mb_strimwidth(
+                            sprintf(
+                                '❌ Demande #%d rejetée: %s (%s) · Motif: %s',
+                                $req_id,
+                                (string)$req['product_name'],
+                                (string)$req['requester_name'],
+                                (string)$admin_note
+                            ),
+                            0,
+                            180,
+                            '…',
+                            'UTF-8'
+                        ),
+                        'url' => project_url('finance/caisse_complete_enhanced.php?view=appro&appro_view=history&req_id=' . $req_id),
+                        'tag' => 'appro-rejected-' . $req_id,
+                        'unread' => 1,
+                    ], [
+                        'event_type' => 'appro_request_rejected',
+                        'event_key' => 'appro-request-rejected-' . $req_id,
+                        'actor_user_id' => (int)$user_id,
+                        'request_id' => (int)$req_id,
+                        'product_id' => (int)$req['product_id'],
+                        'product_name' => (string)$req['product_name'],
+                        'quantity' => (float)$req['quantity'],
+                        'unit_type' => (string)$req['unit_type'],
+                        'requester_name' => (string)$req['requester_name'],
+                        'admin_note' => (string)$admin_note,
+                    ]);
+                } catch (Throwable $e) {
+                    error_log('[APPRO REJECT ALERT] ' . $e->getMessage());
+                }
                 $success_message = "Demande <strong>#$req_id</strong> rejetée.";
             } else { $error_message = "❌ Demande introuvable ou déjà traitée."; }
             $view_mode = 'appro';
@@ -227,10 +312,48 @@ if (isset($_POST['delete_invoice']) && $location_set) {
             }
             $pdo->prepare("DELETE FROM versements    WHERE invoice_id=?")->execute([$invoice_id]);
             $pdo->prepare("DELETE FROM invoice_items WHERE invoice_id=?")->execute([$invoice_id]);
-            $st = $pdo->prepare("SELECT total FROM invoices WHERE id=?"); $st->execute([$invoice_id]); $inv_total = $st->fetchColumn();
+            $st = $pdo->prepare("
+                SELECT i.total, c.name AS client_name
+                FROM invoices i
+                LEFT JOIN clients c ON c.id=i.client_id
+                WHERE i.id=?
+                LIMIT 1
+            ");
+            $st->execute([$invoice_id]);
+            $invRow = $st->fetch(PDO::FETCH_ASSOC) ?: ['total' => 0, 'client_name' => 'Client inconnu'];
+            $inv_total = (float)($invRow['total'] ?? 0);
             $pdo->prepare("DELETE FROM invoices WHERE id=?")->execute([$invoice_id]);
             logAction($pdo,$user_id,'DELETE_INVOICE',"🚫 Annulation vente #$invoice_id — stock retourné",null,$invoice_id,$inv_total);
             $pdo->commit();
+            try {
+                appAlertNotifyRoles($pdo, appAlertOpsRoles(), [
+                    'title' => 'Facture annulée',
+                    'body' => mb_strimwidth(
+                        sprintf(
+                            '🚫 Facture #%d annulée · Client %s · Montant %s FCFA',
+                            $invoice_id,
+                            (string)($invRow['client_name'] ?? 'Client inconnu'),
+                            number_format((float)$inv_total, 0, '', '.')
+                        ),
+                        0,
+                        180,
+                        '…',
+                        'UTF-8'
+                    ),
+                    'url' => project_url('finance/caisse_complete_enhanced.php?view=tickets'),
+                    'tag' => 'invoice-cancelled-' . $invoice_id,
+                    'unread' => 1,
+                ], [
+                    'event_type' => 'invoice_cancelled',
+                    'event_key' => 'invoice-cancelled-' . $invoice_id,
+                    'actor_user_id' => (int)$user_id,
+                    'invoice_id' => (int)$invoice_id,
+                    'invoice_total' => (float)$inv_total,
+                    'client_name' => (string)($invRow['client_name'] ?? ''),
+                ]);
+            } catch (Throwable $e) {
+                error_log('[INVOICE CANCEL ALERT] ' . $e->getMessage());
+            }
             $success_message = "✅ Vente annulée. Stock retourné et marqué 'ANNULATION VENTE' dans l'onglet Stock.";
         } catch (Exception $e) { $pdo->rollBack(); $error_message = "Erreur : " . $e->getMessage(); }
     } else { $error_message = "❌ Mot de passe incorrect !"; }
@@ -306,6 +429,46 @@ if (isset($_POST['process_sale']) && $location_set) {
         }
         logAction($pdo,$user_id,'PROCESS_SALE',"Vente $pay_mode",null,$iid,$total);
         $pdo->commit();
+        try {
+            $clientStmt = $pdo->prepare("SELECT name, phone FROM clients WHERE id=? LIMIT 1");
+            $clientStmt->execute([$client_id]);
+            $clientRow = $clientStmt->fetch(PDO::FETCH_ASSOC) ?: ['name' => 'Client #' . $client_id, 'phone' => ''];
+            $lineParts = [];
+            foreach (array_slice($cart_data, 0, 5) as $line) {
+                $lineParts[] = ($line['product_name'] ?? 'Article') . ' x' . (float)($line['quantity'] ?? 0);
+            }
+            appAlertNotifyRoles($pdo, appAlertOpsRoles(), [
+                'title' => 'Nouvelle facture caisse',
+                'body' => mb_strimwidth(
+                    sprintf(
+                        'Facture #%d · %s · %s CFA · %s · %s',
+                        $iid,
+                        $clientRow['name'],
+                        number_format((float)$total, 0, '', '.'),
+                        $pay_mode,
+                        implode(', ', $lineParts)
+                    ),
+                    0,
+                    180,
+                    '…',
+                    'UTF-8'
+                ),
+                'url' => project_url('finance/ticket.php?invoice_id=' . $iid),
+                'tag' => 'invoice-' . $iid,
+                'unread' => 1,
+            ], [
+                'event_type' => 'invoice_created',
+                'event_key' => 'invoice-created-' . $iid,
+                'actor_user_id' => (int)$user_id,
+                'invoice_id' => (int)$iid,
+                'client_name' => (string)$clientRow['name'],
+                'client_phone' => (string)($clientRow['phone'] ?? ''),
+                'payment_mode' => (string)$pay_mode,
+                'cart_lines' => $cart_data,
+            ]);
+        } catch (Throwable $e) {
+            error_log('[INVOICE ALERT] ' . $e->getMessage());
+        }
         header("Location: ticket.php?invoice_id=$iid"); exit;
     } catch(Exception $e) {
         $pdo->rollBack(); $error_message = $e->getMessage();
@@ -357,6 +520,44 @@ if ($location_set) {
     $st->execute([$company_id,$city_id]); $r = $st->fetch(PDO::FETCH_ASSOC);
     $pos_stats['ventes_jour'] = (int)$r['nb']; $pos_stats['ca_jour'] = (float)$r['ca']; $pos_stats['credits_jour'] = (float)$r['cr'];
     $pos_stats['low_stock'] = count(array_filter($products, fn($p) => $p['stock_disponible'] <= $p['alert_quantity']));
+    $lowStockProducts = array_values(array_filter($products, fn($p) => $p['stock_disponible'] <= $p['alert_quantity']));
+    if ($lowStockProducts) {
+        try {
+            $summaryParts = [];
+            foreach (array_slice($lowStockProducts, 0, 4) as $item) {
+                $summaryParts[] = $item['name'] . ' (' . (float)$item['stock_disponible'] . ')';
+            }
+            $snapshot = [];
+            foreach ($lowStockProducts as $item) {
+                $snapshot[] = [
+                    'id' => (int)$item['id'],
+                    'stock' => (float)$item['stock_disponible'],
+                    'alert' => (float)$item['alert_quantity'],
+                ];
+            }
+            appAlertNotifyRoles($pdo, appAlertOpsRoles(), [
+                'title' => 'Stock bas détecté',
+                'body' => mb_strimwidth(
+                    $pos_stats['low_stock'] . ' produit(s) sous seuil · ' . implode(', ', $summaryParts),
+                    0,
+                    180,
+                    '…',
+                    'UTF-8'
+                ),
+                'url' => project_url('finance/caisse_complete_enhanced.php'),
+                'tag' => 'low-stock-' . $company_id . '-' . $city_id,
+                'unread' => 1,
+            ], [
+                'event_type' => 'low_stock',
+                'event_key' => 'low-stock-' . $company_id . '-' . $city_id,
+                'cooldown_seconds' => 1800,
+                'actor_user_id' => (int)$user_id,
+                'snapshot' => $snapshot,
+            ]);
+        } catch (Throwable $e) {
+            error_log('[LOW STOCK ALERT] ' . $e->getMessage());
+        }
+    }
 }
 
 /* ══════════════════════════════════════════════════

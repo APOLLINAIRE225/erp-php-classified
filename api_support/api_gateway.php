@@ -1,21 +1,58 @@
 <?php
+require_once dirname(__DIR__, 2) . '/_php_classified/bootstrap_paths.php';
+
 // ════════════════════════════════════════════════════════════════
 //  ESPERANCEH20 ERP — API GATEWAY
 //  Bridges clean REST URLs to your existing API files
 //  https://api.esperanceh20.com/v1/{resource}
 // ════════════════════════════════════════════════════════════════
 
-define('ERP_ROOT', '/home/kali/Desktop/ESPERANCEH20');
+$legacyRoot = '/home/kali/Desktop/ESPERANCEH20';
+define('ERP_ROOT', is_dir($legacyRoot) ? $legacyRoot : PROJECT_ROOT);
 
 header('Content-Type: application/json; charset=utf-8');
-header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, PUT, DELETE, PATCH, OPTIONS');
 header('Access-Control-Allow-Headers: Authorization, Content-Type, X-API-Key, X-Requested-With');
+header('Vary: Origin');
 header('X-Powered-By: EsperanceH20-ERP/2.0');
 
-// CORS preflight
+function gateway_allowed_origins(): array {
+    $raw = trim((string)($_SERVER['API_ALLOWED_ORIGINS'] ?? getenv('API_ALLOWED_ORIGINS') ?: ''));
+    if ($raw === '') {
+        $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
+        $host = (string)($_SERVER['HTTP_HOST'] ?? '');
+        return $host !== '' ? [$scheme . '://' . $host] : [];
+    }
+    $origins = [];
+    foreach (explode(',', $raw) as $origin) {
+        $origin = trim($origin);
+        if ($origin !== '') {
+            $origins[] = $origin;
+        }
+    }
+    return array_values(array_unique($origins));
+}
+
+function gateway_origin_allowed(?string $origin): bool {
+    if ($origin === null || trim($origin) === '') {
+        return true;
+    }
+    return in_array(trim($origin), gateway_allowed_origins(), true);
+}
+
+$requestOrigin = trim((string)($_SERVER['HTTP_ORIGIN'] ?? ''));
+if ($requestOrigin !== '' && gateway_origin_allowed($requestOrigin)) {
+    header('Access-Control-Allow-Origin: ' . $requestOrigin);
+}
+
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
-    http_response_code(200); exit;
+    if (!gateway_origin_allowed($requestOrigin)) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'error' => 'Origin non autorisée']);
+        exit;
+    }
+    http_response_code(204);
+    exit;
 }
 
 // ── Load ERP config ──────────────────────────────────────────
@@ -49,14 +86,57 @@ $action   = $segments[2] ?? null;
 $method   = $_SERVER['REQUEST_METHOD'];
 
 // ── Auth ─────────────────────────────────────────────────────
+function gateway_valid_tokens(): array {
+    $raw = trim((string)($_SERVER['API_GATEWAY_TOKENS'] ?? getenv('API_GATEWAY_TOKENS') ?: ''));
+    if ($raw === '') {
+        $single = trim((string)($_SERVER['API_GATEWAY_TOKEN'] ?? getenv('API_GATEWAY_TOKEN') ?: ''));
+        $raw = $single;
+    }
+    $tokens = [];
+    foreach (explode(',', $raw) as $token) {
+        $token = trim($token);
+        if ($token !== '') {
+            $tokens[] = $token;
+        }
+    }
+    return array_values(array_unique($tokens));
+}
+
+function gateway_extract_token(): string {
+    $auth = trim((string)($_SERVER['HTTP_AUTHORIZATION'] ?? ''));
+    if ($auth !== '' && stripos($auth, 'Bearer ') === 0) {
+        return trim(substr($auth, 7));
+    }
+    $apiKey = trim((string)($_SERVER['HTTP_X_API_KEY'] ?? ''));
+    if ($apiKey !== '') {
+        return $apiKey;
+    }
+    return trim((string)($_GET['token'] ?? ''));
+}
+
 function require_auth() {
-    $h = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['HTTP_X_API_KEY'] ?? '';
-    $t = str_replace('Bearer ', '', $h);
-    if (empty($t) && empty($_GET['token'])) {
-        http_response_code(401);
-        echo json_encode(['error'=>'Unauthorized','hint'=>'Authorization: Bearer TOKEN']);
+    $validTokens = gateway_valid_tokens();
+    if (!$validTokens) {
+        http_response_code(500);
+        echo json_encode(['error' => 'API token non configuré côté serveur']);
         exit;
     }
+
+    $token = gateway_extract_token();
+    if ($token === '') {
+        http_response_code(401);
+        echo json_encode(['error' => 'Unauthorized', 'hint' => 'Authorization: Bearer TOKEN']);
+        exit;
+    }
+
+    foreach ($validTokens as $valid) {
+        if (hash_equals($valid, $token)) {
+            return;
+        }
+    }
+    http_response_code(401);
+    echo json_encode(['error' => 'Unauthorized', 'hint' => 'Token invalide']);
+    exit;
 }
 
 // ── Response helper ──────────────────────────────────────────

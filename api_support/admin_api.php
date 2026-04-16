@@ -17,6 +17,7 @@ Middleware::role(['developer', 'admin']);
 
 $pdo = DB::getConnection();
 $userId = $_SESSION['user_id'];
+app_ensure_csrf_token();
 
 function logAction($pdo, $userId, $action, $details = '') {
     try {
@@ -29,6 +30,18 @@ function logAction($pdo, $userId, $action, $details = '') {
 }
 
 $action = $_POST['action'] ?? '';
+$readOnlyActions = [
+    'get_products', 'get_cities', 'get_users', 'get_companies', 'get_db_stats',
+];
+$requiresCsrf = !in_array($action, $readOnlyActions, true);
+if ($requiresCsrf) {
+    $csrfInput = (string)($_SERVER['HTTP_X_CSRF_TOKEN'] ?? $_POST['csrf_token'] ?? $_GET['csrf_token'] ?? '');
+    if (!app_csrf_validate($csrfInput)) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'CSRF invalide']);
+        exit;
+    }
+}
 
 try {
     switch ($action) {

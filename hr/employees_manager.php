@@ -21,6 +21,7 @@ error_reporting(E_ALL);
 require_once APP_ROOT . '/app/core/DB.php';
 require_once APP_ROOT . '/app/core/Auth.php';
 require_once APP_ROOT . '/app/core/Middleware.php';
+require_once PROJECT_ROOT . '/messaging/app_alerts.php';
 require APP_ROOT . '/vendor/autoload.php';
 
 use App\Core\DB;
@@ -241,6 +242,24 @@ function notifyEmployee(PDO $pdo, int $employee_id, string $type, string $messag
     } catch (Throwable $e) {}
 }
 
+function notifyHrWorkflowAlert(PDO $pdo, string $eventType, string $title, string $body, array $meta = []): void {
+    try {
+        appAlertNotifyRoles($pdo, appAlertHrRoles(), [
+            'title' => $title,
+            'body' => mb_strimwidth($body, 0, 180, '…', 'UTF-8'),
+            'url' => project_url('hr/employees_manager.php'),
+            'tag' => 'hr-workflow-' . $eventType,
+            'unread' => 1,
+        ], [
+            'event_type' => $eventType,
+            'actor_user_id' => (int)($_SESSION['user_id'] ?? 0),
+            'meta' => $meta,
+        ]);
+    } catch (Throwable $e) {
+        error_log('[HR WORKFLOW ALERT] ' . $e->getMessage());
+    }
+}
+
 /* ═══════════════════════════════════════════
    DEMANDES
 ═══════════════════════════════════════════ */
@@ -250,26 +269,52 @@ if (isset($_POST['approve_permission'])) {
     logActivity($pdo, $user_id, 'APPROVE_PERMISSION', "Permission #{$pid} approuvée");
     $success_msg = "Permission approuvée !|Status : ACCEPTÉ";
     // Notifier l'employé
-    $row = $pdo->prepare("SELECT employee_id, start_date, end_date FROM permissions WHERE id=?");
+    $row = $pdo->prepare("SELECT p.employee_id, p.start_date, p.end_date, e.full_name FROM permissions p JOIN employees e ON e.id=p.employee_id WHERE p.id=?");
     $row->execute([$pid]);
     if ($r = $row->fetch(PDO::FETCH_ASSOC)) {
         $from = date('d/m/Y', strtotime($r['start_date']));
         $to   = date('d/m/Y', strtotime($r['end_date']));
         notifyEmployee($pdo, (int)$r['employee_id'], 'permission',
             "✅ Votre demande de permission du {$from} au {$to} a été ACCEPTÉE par l'administration.");
+        notifyHrWorkflowAlert(
+            $pdo,
+            'hr_permission_approved',
+            'Permission RH validée',
+            sprintf('✅ %s: permission approuvée (%s au %s)', (string)$r['full_name'], $from, $to),
+            [
+                'permission_id' => $pid,
+                'employee_id' => (int)$r['employee_id'],
+                'employee_name' => (string)$r['full_name'],
+                'start_date' => (string)$r['start_date'],
+                'end_date' => (string)$r['end_date'],
+            ]
+        );
     }
 }
 if (isset($_POST['reject_permission'])) {
     $pid = (int)$_POST['permission_id'];
     $pdo->prepare("UPDATE permissions SET status='rejete' WHERE id=?")->execute([$pid]);
     $success_msg = "Permission rejetée !|Status : REJETÉ";
-    $row = $pdo->prepare("SELECT employee_id, start_date, end_date FROM permissions WHERE id=?");
+    $row = $pdo->prepare("SELECT p.employee_id, p.start_date, p.end_date, e.full_name FROM permissions p JOIN employees e ON e.id=p.employee_id WHERE p.id=?");
     $row->execute([$pid]);
     if ($r = $row->fetch(PDO::FETCH_ASSOC)) {
         $from = date('d/m/Y', strtotime($r['start_date']));
         $to   = date('d/m/Y', strtotime($r['end_date']));
         notifyEmployee($pdo, (int)$r['employee_id'], 'permission',
             "❌ Votre demande de permission du {$from} au {$to} a été REJETÉE par l'administration.");
+        notifyHrWorkflowAlert(
+            $pdo,
+            'hr_permission_rejected',
+            'Permission RH rejetée',
+            sprintf('❌ %s: permission rejetée (%s au %s)', (string)$r['full_name'], $from, $to),
+            [
+                'permission_id' => $pid,
+                'employee_id' => (int)$r['employee_id'],
+                'employee_name' => (string)$r['full_name'],
+                'start_date' => (string)$r['start_date'],
+                'end_date' => (string)$r['end_date'],
+            ]
+        );
     }
 }
 if (isset($_POST['approve_advance'])) {
@@ -277,24 +322,48 @@ if (isset($_POST['approve_advance'])) {
     $pdo->prepare("UPDATE advances SET status='approuve' WHERE id=?")->execute([$aid]);
     logActivity($pdo, $user_id, 'APPROVE_ADVANCE', "Avance #{$aid} approuvée");
     $success_msg = "Avance approuvée !|Status : APPROUVÉ";
-    $row = $pdo->prepare("SELECT employee_id, amount FROM advances WHERE id=?");
+    $row = $pdo->prepare("SELECT a.employee_id, a.amount, e.full_name FROM advances a JOIN employees e ON e.id=a.employee_id WHERE a.id=?");
     $row->execute([$aid]);
     if ($r = $row->fetch(PDO::FETCH_ASSOC)) {
         $amt = number_format((float)$r['amount'], 0, ',', ' ');
         notifyEmployee($pdo, (int)$r['employee_id'], 'advance',
             "✅ Votre demande d'avance de {$amt} FCFA a été APPROUVÉE par l'administration.");
+        notifyHrWorkflowAlert(
+            $pdo,
+            'hr_advance_approved',
+            'Avance RH validée',
+            sprintf('✅ %s: avance approuvée (%s FCFA)', (string)$r['full_name'], $amt),
+            [
+                'advance_id' => $aid,
+                'employee_id' => (int)$r['employee_id'],
+                'employee_name' => (string)$r['full_name'],
+                'amount' => (float)$r['amount'],
+            ]
+        );
     }
 }
 if (isset($_POST['reject_advance'])) {
     $aid = (int)$_POST['advance_id'];
     $pdo->prepare("UPDATE advances SET status='rejete' WHERE id=?")->execute([$aid]);
     $success_msg = "Avance rejetée !|Status : REJETÉ";
-    $row = $pdo->prepare("SELECT employee_id, amount FROM advances WHERE id=?");
+    $row = $pdo->prepare("SELECT a.employee_id, a.amount, e.full_name FROM advances a JOIN employees e ON e.id=a.employee_id WHERE a.id=?");
     $row->execute([$aid]);
     if ($r = $row->fetch(PDO::FETCH_ASSOC)) {
         $amt = number_format((float)$r['amount'], 0, ',', ' ');
         notifyEmployee($pdo, (int)$r['employee_id'], 'advance',
             "❌ Votre demande d'avance de {$amt} FCFA a été REJETÉE par l'administration.");
+        notifyHrWorkflowAlert(
+            $pdo,
+            'hr_advance_rejected',
+            'Avance RH rejetée',
+            sprintf('❌ %s: avance rejetée (%s FCFA)', (string)$r['full_name'], $amt),
+            [
+                'advance_id' => $aid,
+                'employee_id' => (int)$r['employee_id'],
+                'employee_name' => (string)$r['full_name'],
+                'amount' => (float)$r['amount'],
+            ]
+        );
     }
 }
 
@@ -348,9 +417,35 @@ if (isset($_POST['generate_payroll'])) {
 
 if (isset($_POST['mark_paid'])) {
     $id = (int)$_POST['payroll_id'];
+    $payInfoStmt = $pdo->prepare("
+        SELECT pr.id, pr.employee_id, pr.month, pr.net_salary, e.full_name
+        FROM payroll pr
+        JOIN employees e ON e.id=pr.employee_id
+        WHERE pr.id=?
+        LIMIT 1
+    ");
+    $payInfoStmt->execute([$id]);
+    $payInfo = $payInfoStmt->fetch(PDO::FETCH_ASSOC);
     $pdo->prepare("UPDATE payroll SET status='paye', payment_date=NOW(), paid_by=? WHERE id=?")->execute([$user_id, $id]);
     logActivity($pdo, $user_id, 'MARK_PAID', "Paie #$id marquée payée");
     $success_msg = "Paiement confirmé !|Status : PAYÉ";
+    if ($payInfo) {
+        $monthLabel = (string)($payInfo['month'] ?? '');
+        $netLabel = number_format((float)($payInfo['net_salary'] ?? 0), 0, ',', ' ');
+        notifyHrWorkflowAlert(
+            $pdo,
+            'hr_salary_paid',
+            'Salaire marqué payé',
+            sprintf('💸 %s: salaire %s payé (%s FCFA)', (string)$payInfo['full_name'], $monthLabel, $netLabel),
+            [
+                'payroll_id' => (int)$payInfo['id'],
+                'employee_id' => (int)$payInfo['employee_id'],
+                'employee_name' => (string)$payInfo['full_name'],
+                'month' => $monthLabel,
+                'net_salary' => (float)$payInfo['net_salary'],
+            ]
+        );
+    }
 }
 
 /* ═══════════════════════════════════════════

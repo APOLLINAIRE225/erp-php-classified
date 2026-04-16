@@ -1,45 +1,48 @@
-package cloud.coredesk.esperance.messaging.push
+package cloud.coredesk.esperance.messaging.monitor
 
 import android.net.Uri
 import android.util.Log
 import android.webkit.CookieManager
+import cloud.coredesk.esperance.messaging.BuildConfig
 import okhttp3.FormBody
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.concurrent.Executors
-import cloud.coredesk.esperance.messaging.BuildConfig
 
-object TokenSync {
-    private const val TAG = "TokenSync"
+object AppEventReporter {
+    private const val TAG = "AppEventReporter"
     private val client = OkHttpClient()
     private val executor = Executors.newSingleThreadExecutor()
 
-    fun enqueue(token: String, cookieUrl: String? = null) {
+    fun enqueue(type: String, message: String, url: String?, details: String? = null, source: String = "android_wrapper") {
+        if (message.isBlank()) return
+
         executor.execute {
             runCatching {
-                val cookieHeader = resolveCookieHeader(cookieUrl)
-                if (cookieHeader.isNullOrBlank()) {
-                    Log.w(TAG, "No session cookie available for FCM token sync")
-                    return@runCatching
-                }
+                val cookieHeader = resolveCookieHeader(url)
                 val body = FormBody.Builder()
-                    .add("token", token)
-                    .add("platform", "android_native")
+                    .add("type", type)
+                    .add("message", message.take(500))
+                    .add("url", (url ?: BuildConfig.BASE_URL).take(500))
+                    .add("details", (details ?: "").take(2000))
+                    .add("source", source.take(120))
                     .build()
+
                 val builder = Request.Builder()
-                    .url(BuildConfig.REGISTER_TOKEN_URL)
+                    .url(BuildConfig.REPORT_EVENT_URL)
                     .post(body)
+
                 if (!cookieHeader.isNullOrBlank()) {
                     builder.header("Cookie", cookieHeader)
                 }
-                val request = builder.build()
-                client.newCall(request).execute().use { response ->
+
+                client.newCall(builder.build()).execute().use { response ->
                     if (!response.isSuccessful) {
-                        Log.e(TAG, "FCM token sync failed: HTTP ${response.code}")
+                        Log.e(TAG, "App event report failed: HTTP ${response.code}")
                     }
                 }
             }.onFailure { error ->
-                Log.e(TAG, "FCM token sync error", error)
+                Log.e(TAG, "App event report error", error)
             }
         }
     }

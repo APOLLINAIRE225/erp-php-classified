@@ -5,6 +5,7 @@ ini_set('display_errors', 0); error_reporting(0);
 require_once APP_ROOT . '/app/core/DB.php';
 require_once APP_ROOT . '/app/core/Auth.php';
 require_once APP_ROOT . '/app/core/Middleware.php';
+require_once PROJECT_ROOT . '/messaging/app_alerts.php';
 require APP_ROOT . '/vendor/autoload.php';
 use App\Core\DB; use App\Core\Auth; use App\Core\Middleware;
 
@@ -111,6 +112,24 @@ function syncInvoiceStatus(PDO $pdo, int $invoiceId): void {
     $reste = $total - $paid;
     $status = $reste <= 0.01 ? 'Payée' : ($paid > 0 ? 'Partielle' : 'Impayée');
     $pdo->prepare("UPDATE invoices SET status=? WHERE id=?")->execute([$status, $invoiceId]);
+}
+
+function notifyFinanceWorkflowAlert(PDO $pdo, string $eventType, string $title, string $body, string $url, array $meta = []): void {
+    try {
+        appAlertNotifyRoles($pdo, appAlertOpsRoles(), [
+            'title' => $title,
+            'body' => mb_strimwidth($body, 0, 180, '…', 'UTF-8'),
+            'url' => $url,
+            'tag' => 'finance-workflow-' . $eventType,
+            'unread' => 1,
+        ], [
+            'event_type' => $eventType,
+            'actor_user_id' => (int)($_SESSION['user_id'] ?? 0),
+            'meta' => $meta,
+        ]);
+    } catch (Throwable $e) {
+        error_log('[FINANCE WORKFLOW ALERT] ' . $e->getMessage());
+    }
 }
 
 /*━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -428,6 +447,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $flash_type = 'success';
             $flash_text = "✅ Versement de ".number_format($p_amount,0,',',' ')." FCFA enregistré — Reçu : $receipt";
             $_SESSION['last_receipt'] = ['id'=>$txId,'receipt'=>$receipt,'amount'=>$p_amount,'mode'=>$p_mode,'invoice'=>$p_invoice,'client'=>$p_client,'date'=>$pdate,'type'=>'versement'];
+            try {
+                $clientNameStmt = $pdo->prepare("SELECT name FROM clients WHERE id=? LIMIT 1");
+                $clientNameStmt->execute([$p_client]);
+                $clientName = (string)($clientNameStmt->fetchColumn() ?: ('Client #' . $p_client));
+                notifyFinanceWorkflowAlert(
+                    $pdo,
+                    'invoice_payment_recorded',
+                    'Paiement facture enregistré',
+                    sprintf(
+                        '💳 Facture #%d réglée: %s FCFA (%s) · Client %s',
+                        $p_invoice,
+                        number_format((float)$p_amount, 0, '', '.'),
+                        $p_mode,
+                        $clientName
+                    ),
+                    project_url('finance/ticket.php?invoice_id=' . $p_invoice),
+                    [
+                        'invoice_id' => $p_invoice,
+                        'client_id' => $p_client,
+                        'client_name' => $clientName,
+                        'amount' => (float)$p_amount,
+                        'payment_mode' => (string)$p_mode,
+                        'receipt_number' => (string)$receipt,
+                        'source' => 'versement',
+                    ]
+                );
+            } catch (Throwable $e) {
+                error_log('[VERSEMENT PAYMENT ALERT] ' . $e->getMessage());
+            }
             $active_tab = 'payer';
         } else {
             $flash_type = 'error'; $flash_text = "Montant invalide ou supérieur au reste dû.";
@@ -518,6 +566,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'note' => $app_note,
             ]);
             $flash_type='success'; $flash_text="🔄 ".number_format($p_amount,0,',',' ')." FCFA déduit du solde et appliqué sur la Facture #$p_invoice";
+            try {
+                $clientNameStmt = $pdo->prepare("SELECT name FROM clients WHERE id=? LIMIT 1");
+                $clientNameStmt->execute([$p_client]);
+                $clientName = (string)($clientNameStmt->fetchColumn() ?: ('Client #' . $p_client));
+                notifyFinanceWorkflowAlert(
+                    $pdo,
+                    'invoice_payment_wallet_applied',
+                    'Paiement facture via solde client',
+                    sprintf(
+                        '🔄 Facture #%d: %s FCFA appliqués depuis wallet · Client %s',
+                        $p_invoice,
+                        number_format((float)$p_amount, 0, '', '.'),
+                        $clientName
+                    ),
+                    project_url('finance/ticket.php?invoice_id=' . $p_invoice),
+                    [
+                        'invoice_id' => $p_invoice,
+                        'client_id' => $p_client,
+                        'client_name' => $clientName,
+                        'amount' => (float)$p_amount,
+                        'payment_mode' => 'Solde compte',
+                        'receipt_number' => (string)$receipt,
+                        'wallet_application_ref' => (string)$ref,
+                        'source' => 'wallet_application',
+                    ]
+                );
+            } catch (Throwable $e) {
+                error_log('[VERSEMENT WALLET ALERT] ' . $e->getMessage());
+            }
             $active_tab='payer';
         } else { $flash_type='error'; $flash_text="Solde insuffisant ou montant invalide."; }
     }
@@ -553,6 +630,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'cashier_city' => $row['cashier_city'] ?? $cashierCity,
                 'note' => $reason ?: 'Montant modifié',
             ]);
+            try {
+                $clientNameStmt = $pdo->prepare("SELECT name FROM clients WHERE id=? LIMIT 1");
+                $clientNameStmt->execute([$p_client]);
+                $clientName = (string)($clientNameStmt->fetchColumn() ?: ('Client #' . $p_client));
+                $refValue = (string)($row[$refCol] ?? ('#' . $txId));
+                $targetUrl = ($txType === 'versement' && (int)($row['invoice_id'] ?? 0) > 0)
+                    ? project_url('finance/ticket.php?invoice_id=' . (int)$row['invoice_id'])
+                    : project_url('finance/versement.php?company_id=' . $p_company . '&city_id=' . $p_city . '&client_id=' . $p_client . '&tab=historique');
+                notifyFinanceWorkflowAlert(
+                    $pdo,
+                    'payment_updated',
+                    'Transaction paiement modifiée',
+                    sprintf(
+                        '✏️ %s %s: %s → %s FCFA · Client %s',
+                        $txType === 'depot' ? 'Dépôt' : 'Paiement',
+                        $refValue,
+                        number_format((float)$row['amount'], 0, '', '.'),
+                        number_format((float)$newAmount, 0, '', '.'),
+                        $clientName
+                    ),
+                    $targetUrl,
+                    [
+                        'tx_type' => $txType,
+                        'tx_id' => $txId,
+                        'reference' => $refValue,
+                        'client_id' => $p_client,
+                        'client_name' => $clientName,
+                        'invoice_id' => isset($row['invoice_id']) ? (int)$row['invoice_id'] : null,
+                        'amount_before' => (float)$row['amount'],
+                        'amount_after' => (float)$newAmount,
+                        'reason' => $reason ?: 'Montant modifié',
+                    ]
+                );
+            } catch (Throwable $e) {
+                error_log('[PAYMENT UPDATED ALERT] ' . $e->getMessage());
+            }
             $flash_type = 'success';
             $flash_text = "✏️ Montant mis à jour pour " . ($txType === 'depot' ? 'le dépôt' : 'le paiement') . ' ' . ($row[$refCol] ?? ('#' . $txId));
             $active_tab = 'historique';
@@ -590,6 +703,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 'cashier_city' => $row['cashier_city'] ?? $cashierCity,
                 'note' => $reason ?: 'Annulation manuelle',
             ]);
+            try {
+                $clientNameStmt = $pdo->prepare("SELECT name FROM clients WHERE id=? LIMIT 1");
+                $clientNameStmt->execute([$p_client]);
+                $clientName = (string)($clientNameStmt->fetchColumn() ?: ('Client #' . $p_client));
+                $refValue = (string)($row[$refCol] ?? ('#' . $txId));
+                $targetUrl = ($txType === 'versement' && (int)($row['invoice_id'] ?? 0) > 0)
+                    ? project_url('finance/ticket.php?invoice_id=' . (int)$row['invoice_id'])
+                    : project_url('finance/versement.php?company_id=' . $p_company . '&city_id=' . $p_city . '&client_id=' . $p_client . '&tab=audit');
+                notifyFinanceWorkflowAlert(
+                    $pdo,
+                    'payment_cancelled',
+                    'Transaction paiement annulée',
+                    sprintf(
+                        '🧯 %s %s annulé: %s FCFA · Client %s',
+                        $txType === 'depot' ? 'Dépôt' : 'Paiement',
+                        $refValue,
+                        number_format((float)$row['amount'], 0, '', '.'),
+                        $clientName
+                    ),
+                    $targetUrl,
+                    [
+                        'tx_type' => $txType,
+                        'tx_id' => $txId,
+                        'reference' => $refValue,
+                        'client_id' => $p_client,
+                        'client_name' => $clientName,
+                        'invoice_id' => isset($row['invoice_id']) ? (int)$row['invoice_id'] : null,
+                        'amount' => (float)$row['amount'],
+                        'reason' => $reason ?: 'Annulation manuelle',
+                    ]
+                );
+            } catch (Throwable $e) {
+                error_log('[PAYMENT CANCELLED ALERT] ' . $e->getMessage());
+            }
             $flash_type = 'success';
             $flash_text = "🧯 Transaction annulée : " . ($row[$refCol] ?? ('#' . $txId));
             $active_tab = 'audit';

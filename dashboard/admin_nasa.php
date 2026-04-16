@@ -31,6 +31,7 @@ Middleware::role(['developer', 'admin']);
 $pdo    = DB::getConnection();
 $userId = $_SESSION['user_id'];
 $userRole = $_SESSION['role'] ?? 'admin';
+$csrfToken = app_ensure_csrf_token();
 
 function ensureAttendanceSettingsStorage(PDO $pdo): void {
     try {
@@ -443,6 +444,20 @@ function logAction($pdo, $userId, $action, $details = '') {
 if (isset($_GET['ajax'])) {
     header('Content-Type: application/json; charset=UTF-8');
     $act = $_GET['ajax'];
+    $readOnlyActs = [
+        'get_users','get_companies','get_cities','get_cities_by_company','get_products','get_products_by_context',
+        'get_promotions','get_loyalty_clients','get_abandoned_carts','get_loyalty_transactions','get_coupon_stats',
+        'get_personalized_coupons','get_logs','logs_chart','db_stats','quick_stock','dashboard_stats',
+        'get_notif_count','get_attendance_settings','export_logs_csv','export_abandoned_carts_csv','export_coupons_csv',
+    ];
+    $requiresCsrf = !in_array($act, $readOnlyActs, true);
+    if ($requiresCsrf) {
+        $csrfInput = (string)($_SERVER['HTTP_X_CSRF_TOKEN'] ?? $_GET['csrf_token'] ?? $_POST['csrf_token'] ?? '');
+        if (!app_csrf_validate($csrfInput)) {
+            http_response_code(403);
+            echo json_encode(['ok' => false, 'msg' => 'CSRF invalide']); exit;
+        }
+    }
 
     /* ── Users ── */
     if ($act === 'get_users') {
@@ -552,11 +567,14 @@ if (isset($_GET['ajax'])) {
     if ($act === 'get_products') {
         $q = '%' . ($_GET['q'] ?? '') . '%';
         $cid = (int)($_GET['company_id'] ?? 0);
+        $cityFilter = (int)($_GET['city_id'] ?? 0);
         $extra = $cid ? " AND p.company_id=$cid" : '';
+        if ($cityFilter) $extra .= " AND p.city_id=$cityFilter";
         $st = $pdo->prepare("SELECT p.id,p.name,p.category,p.price,p.alert_quantity,
-            p.image_path, COALESCE(c.name,'—') company_name
+            p.image_path, COALESCE(c.name,'—') company_name, COALESCE(ci.name,'—') city_name
             FROM products p LEFT JOIN companies c ON c.id=p.company_id
-            WHERE (p.name LIKE ? OR p.category LIKE ?) $extra ORDER BY p.name LIMIT 200");
+            LEFT JOIN cities ci ON ci.id=p.city_id
+            WHERE (p.name LIKE ? OR p.category LIKE ?) $extra ORDER BY p.id DESC LIMIT 200");
         $st->execute([$q,$q]);
         $rows = $st->fetchAll(PDO::FETCH_ASSOC);
         foreach ($rows as &$row) {
@@ -568,6 +586,15 @@ if (isset($_GET['ajax'])) {
         $d = json_decode(file_get_contents('php://input'), true);
         if (empty($d['company_id']) || empty($d['city_id'])) {
             echo json_encode(['ok'=>false,'msg'=>'Société et Ville obligatoires']); exit;
+        }
+        /* ── Anti-doublon : même nom (insensible casse) dans la même ville ── */
+        if (empty($d['force'])) {
+            $chk = $pdo->prepare("SELECT id,name FROM products WHERE LOWER(name)=LOWER(?) AND company_id=? AND city_id=? LIMIT 1");
+            $chk->execute([trim($d['name']), (int)$d['company_id'], (int)$d['city_id']]);
+            $existing = $chk->fetch(PDO::FETCH_ASSOC);
+            if ($existing) {
+                echo json_encode(['ok'=>false,'doublon'=>true,'msg'=>"Un produit « {$existing['name']} » existe déjà dans ce magasin (ID #{$existing['id']})."]); exit;
+            }
         }
         $s = $pdo->prepare("INSERT INTO products (name,category,price,alert_quantity,company_id,city_id) VALUES(?,?,?,?,?,?)");
         $s->execute([
@@ -644,16 +671,22 @@ if (isset($_GET['ajax'])) {
     if ($act === 'delete_product') {
         $id = (int)($_GET['id'] ?? 0);
         try {
-            $st = $pdo->prepare("SELECT image_path FROM products WHERE id=? LIMIT 1");
+            $st = $pdo->prepare("SELECT image_path, name FROM products WHERE id=? LIMIT 1");
             $st->execute([$id]);
-            $imagePath = $st->fetchColumn() ?: null;
+            $product = $st->fetch(PDO::FETCH_ASSOC);
+            $imagePath = $product['image_path'] ?? null;
+            $productName = $product['name'] ?? '';
         } catch (Throwable $e) {
-            $imagePath = null;
+            $imagePath = null; $productName = '';
         }
+        /* Supprime d'abord les enregistrements dépendants avant le produit */
+        $pdo->prepare("DELETE FROM stock_movements WHERE product_id=?")->execute([$id]);
+        try { $pdo->prepare("DELETE FROM order_items WHERE product_id=?")->execute([$id]); } catch(Exception $e) {}
+        try { $pdo->prepare("DELETE FROM promotion_campaigns WHERE product_id=?")->execute([$id]); } catch(Exception $e) {}
         $pdo->prepare("DELETE FROM products WHERE id=?")->execute([$id]);
         deleteProductImageFile($imagePath);
-        logAction($pdo,$userId,'delete_product',"ID: $id");
-        echo json_encode(['ok'=>true]); exit;
+        logAction($pdo,$userId,'delete_product',"ID: $id Name: $productName");
+        echo json_encode(['ok'=>true,'name'=>$productName]); exit;
     }
 
     /* ── Promotions ── */
@@ -1449,6 +1482,7 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
 .ctx-info{font-family:var(--fb);font-size:12px;color:var(--muted);margin-left:auto;display:flex;align-items:center;gap:8px;}
 .ctx-dot{width:7px;height:7px;border-radius:50%;background:var(--neon);box-shadow:0 0 8px var(--neon);animation:pdot 2s infinite;}
 @keyframes pdot{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.7)}}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.7)}}
 
 /* ══════ TAB NAV ══════ */
 .tab-nav{display:flex;align-items:center;flex-wrap:wrap;gap:6px;
@@ -1704,6 +1738,10 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
             <span style="background:var(--red);color:#fff;border-radius:50%;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;font-size:10px"><?= min($notif_count,99) ?></span>
             <?php endif; ?>
         </a>
+        <a href="<?= project_url('admin/app_alert_history.php') ?>" class="user-badge" style="padding:8px 16px;font-size:12px">
+            <i class="fas fa-timeline"></i>
+            Historique Notifs
+        </a>
         <div class="user-badge" onclick="showUserMenu()">
             <i class="fas fa-user-shield"></i>
             <?= htmlspecialchars($user_name) ?>
@@ -1751,6 +1789,7 @@ body::after{content:'';position:fixed;inset:0;z-index:0;pointer-events:none;
     <!-- Liens rapides -->
     <div style="margin-left:auto;display:flex;gap:6px;flex-wrap:wrap">
         <a href="<?= project_url('stock/appro_requests.php') ?>"         class="tn" style="border-color:rgba(255,145,64,0.3);color:var(--orange)"><i class="fas fa-truck-loading"></i> Appro</a>
+        <a href="<?= project_url('admin/app_alert_history.php') ?>"      class="tn" style="border-color:rgba(124,58,237,0.3);color:var(--purple)"><i class="fas fa-timeline"></i> Histo Notifs</a>
         <a href="<?= project_url('hr/employees_manager.php') ?>"      class="tn" style="border-color:rgba(6,182,212,0.3);color:var(--cyan)"><i class="fas fa-user-tie"></i> Employés</a>
         <a href="<?= project_url('documents/documents_erp_pro.php') ?>"      class="tn" style="border-color:rgba(50,190,143,0.3);color:var(--neon)"><i class="fas fa-archive"></i> Archives</a>
         <a href="<?= project_url('clients/clients_erp_pro.php') ?>"        class="tn" style="border-color:rgba(61,140,255,0.3);color:var(--blue)"><i class="fas fa-users-cog"></i> Clients</a>
@@ -2091,6 +2130,19 @@ new Chart(document.getElementById('chart-pie').getContext('2d'), {
      MODULE: PRODUCTS — Société + Ville obligatoires
 ═══════════════════════════════════════════ -->
 <?php if($module==='products'): ?>
+
+<!-- Compteur live total produits -->
+<div style="display:flex;align-items:center;gap:20px;background:linear-gradient(135deg,rgba(50,190,143,0.1),rgba(6,182,212,0.07));border:1px solid rgba(50,190,143,0.25);border-radius:16px;padding:18px 28px;margin-bottom:18px">
+    <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(50,190,143,0.18);border-radius:12px;padding:12px 24px;min-width:100px">
+        <span id="global-prod-count" style="font-size:56px;font-weight:900;color:var(--neon);line-height:1;font-family:var(--fh,monospace);letter-spacing:-2px;transition:transform .15s ease">0</span>
+        <span style="font-size:10px;font-weight:700;color:rgba(50,190,143,0.7);text-transform:uppercase;letter-spacing:2px;margin-top:4px">produit(s)</span>
+    </div>
+    <div>
+        <div style="font-size:16px;font-weight:800;color:var(--neon);margin-bottom:4px"><i class="fas fa-boxes"></i> Catalogue total</div>
+        <div style="font-size:12px;color:var(--muted);line-height:1.6">Nombre de produits enregistrés<br>dans toutes les sociétés et magasins.<br><span style="color:var(--cyan)"><i class="fas fa-circle" style="font-size:7px;animation:pulse 1.5s infinite"></i> Mis à jour en temps réel</span></div>
+    </div>
+</div>
+
 <div class="panel">
     <div class="ph">
         <div class="ph-title"><div class="dot n"></div> Gestion des produits</div>
@@ -2118,6 +2170,19 @@ new Chart(document.getElementById('chart-pie').getContext('2d'), {
 <!-- Modal Ajouter Produit — SOCIÉTÉ + VILLE FORCÉES -->
 <div id="modal-add-prod" class="modal"><div class="modal-box">
     <h2 style="color:var(--neon)"><i class="fas fa-box-open"></i> Nouveau produit</h2>
+
+    <!-- Compteur live — en haut du modal -->
+    <div id="np-city-count-wrap" style="display:none;align-items:center;gap:18px;background:linear-gradient(135deg,rgba(50,190,143,0.12),rgba(6,182,212,0.07));border:1px solid rgba(50,190,143,0.28);border-radius:14px;padding:14px 22px;margin-bottom:16px">
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;background:rgba(50,190,143,0.2);border-radius:10px;padding:10px 20px;min-width:90px">
+            <span id="np-city-count" style="font-size:52px;font-weight:900;color:var(--neon);line-height:1;font-family:var(--fh,monospace);letter-spacing:-2px;transition:transform .15s ease">0</span>
+            <span style="font-size:10px;font-weight:700;color:rgba(50,190,143,0.7);text-transform:uppercase;letter-spacing:1.5px;margin-top:3px">produit(s)</span>
+        </div>
+        <div style="flex:1">
+            <div style="font-size:14px;font-weight:800;color:var(--neon);margin-bottom:4px"><i class="fas fa-store"></i> Produits dans ce magasin</div>
+            <div style="font-size:11px;color:var(--muted);line-height:1.6"><i class="fas fa-circle" style="font-size:7px;color:var(--cyan);animation:pulse 1.5s infinite"></i> Mis à jour en temps réel à chaque ajout</div>
+        </div>
+    </div>
+
     <div class="forced-indicator">
         <i class="fas fa-exclamation-triangle"></i>
         <span><strong>Société et Ville obligatoires</strong> — Le produit sera rattaché à ce contexte et son stock initialisé à zéro.</span>
@@ -2132,7 +2197,7 @@ new Chart(document.getElementById('chart-pie').getContext('2d'), {
             </select>
         </div>
         <div class="fg"><label>Ville / Magasin <span class="required-star">*</span></label>
-            <select id="np-city" disabled>
+            <select id="np-city" disabled onchange="onCitySelectForProduct()">
                 <option value="">— Choisir société d'abord —</option>
             </select>
         </div>
@@ -2151,8 +2216,35 @@ new Chart(document.getElementById('chart-pie').getContext('2d'), {
         <div class="product-image-preview empty" id="np-image-preview"><span><i class="fas fa-image"></i><br>Aucune image sélectionnée</span></div>
     </div>
     <div class="modal-btns">
-        <button onclick="addProduct()" class="btn btn-n"><i class="fas fa-save"></i> Créer le produit</button>
-        <button onclick="closeModal('modal-add-prod')" class="btn btn-r"><i class="fas fa-times"></i> Annuler</button>
+        <button onclick="addProduct()" id="btn-add-prod" class="btn btn-n"><i class="fas fa-save"></i> Créer le produit</button>
+        <button onclick="closeModal('modal-add-prod')" class="btn btn-r"><i class="fas fa-times"></i> Fermer</button>
+    </div>
+    <!-- Historique produits de la ville sélectionnée -->
+    <div id="np-city-history" style="display:none;margin-top:20px;border-top:1px solid rgba(255,255,255,0.08);padding-top:14px">
+        <div style="font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px"><i class="fas fa-history"></i> Historique du magasin</div>
+        <div id="np-city-history-list" style="max-height:220px;overflow-y:auto;display:flex;flex-direction:column;gap:5px"></div>
+    </div>
+</div></div>
+
+<!-- Modal Suppression Produit -->
+<div id="modal-delete-prod" class="modal"><div class="modal-box" style="max-width:420px">
+    <div style="text-align:center;margin-bottom:18px">
+        <div style="width:64px;height:64px;border-radius:50%;background:rgba(255,53,83,0.15);border:2px solid rgba(255,53,83,0.4);display:flex;align-items:center;justify-content:center;margin:0 auto 14px">
+            <i class="fas fa-trash-alt" style="font-size:26px;color:var(--red)"></i>
+        </div>
+        <h2 style="color:var(--red);margin:0 0 6px">Supprimer le produit</h2>
+        <div id="del-prod-name" style="font-size:15px;font-weight:700;color:var(--light);background:rgba(255,53,83,0.08);border:1px solid rgba(255,53,83,0.2);border-radius:8px;padding:8px 16px;margin:10px 0"></div>
+        <div style="font-size:12px;color:var(--muted);line-height:1.6">Cette action est <strong style="color:var(--red)">irréversible</strong>.<br>Le produit, son image et ses données de stock seront supprimés.</div>
+    </div>
+    <div class="fg" style="margin-bottom:16px">
+        <label style="font-size:12px;color:var(--muted)">Tapez <strong id="del-prod-confirm-hint" style="color:var(--red)"></strong> pour confirmer</label>
+        <input type="text" id="del-prod-input" placeholder="Nom du produit…" oninput="checkDeleteConfirm()" autocomplete="off"
+            style="border:1.5px solid rgba(255,53,83,0.3);background:rgba(255,53,83,0.05)">
+    </div>
+    <div class="modal-btns">
+        <button id="btn-confirm-delete-prod" onclick="confirmDeleteProduct()" class="btn btn-r" disabled
+            style="opacity:.4;cursor:not-allowed;flex:1"><i class="fas fa-trash-alt"></i> Supprimer définitivement</button>
+        <button onclick="closeModal('modal-delete-prod')" class="btn btn-g"><i class="fas fa-times"></i> Annuler</button>
     </div>
 </div></div>
 
@@ -2673,10 +2765,15 @@ function debounce(fn,delay){
    🌍 AJAX helper
 ═══════════════════════════════════════════════ */
 async function api(action, params={}, body=null){
-    const qs=Object.entries(params).map(([k,v])=>`${k}=${encodeURIComponent(v)}`).join('&');
+    const csrf = <?= json_encode($csrfToken, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?>;
+    const mergedParams = {...params, csrf_token: csrf};
+    const qs=Object.entries(mergedParams).map(([k,v])=>`${k}=${encodeURIComponent(v)}`).join('&');
     const url=`?ajax=${action}${qs?'&'+qs:''}`;
-    const opts={method: body ? 'POST' : 'GET', headers:{'X-Requested-With':'XMLHttpRequest'}};
-    if(body){ opts.headers['Content-Type']='application/json'; opts.body=JSON.stringify(body); }
+    const opts={method: body ? 'POST' : 'GET', headers:{'X-Requested-With':'XMLHttpRequest','X-CSRF-Token':csrf}};
+    if(body){
+        opts.headers['Content-Type']='application/json';
+        opts.body=JSON.stringify({...body, csrf_token: csrf});
+    }
     const r=await fetch(url,opts);
     return r.json();
 }
@@ -2860,6 +2957,8 @@ async function loadProducts(){
     const company_id=document.getElementById('prod-co-filter')?.value||0;
     const data=await api('get_products',{q,company_id});
     window.__adminProducts = Array.isArray(data) ? data : [];
+    /* Met à jour le compteur live en haut de page */
+    animateCount(document.getElementById('global-prod-count'), Array.isArray(data)?data.length:0);
     const tbody=document.getElementById('products-tbody');
     if(!tbody) return;
     if(!data.length){ tbody.innerHTML='<tr><td colspan="8"><div class="empty-state"><i class="fas fa-box"></i><h3>Aucun produit</h3></div></td></tr>'; return; }
@@ -2872,9 +2971,9 @@ async function loadProducts(){
         <td><span style="font-family:var(--fh);font-size:14px;font-weight:900;color:var(--gold)">${formatPrice(p.price)}</span></td>
         <td><span style="color:${p.alert_quantity>10?'var(--orange)':'var(--muted)'};font-size:12px">${p.alert_quantity}</span></td>
         <td><span style="font-size:11px;padding:3px 9px;border-radius:13px;background:rgba(6,182,212,0.1);color:var(--cyan);font-weight:700">${esc(p.company_name)}</span></td>
-        <td><div style="display:flex;gap:5px">
-            <button onclick="editProductById(${p.id})" class="btn btn-g btn-xs"><i class="fas fa-edit"></i></button>
-            <button onclick='deleteProduct(${p.id}, ${JSON.stringify(String(p.name||""))})' class="btn btn-r btn-xs"><i class="fas fa-trash"></i></button>
+        <td><div style="display:flex;gap:6px;align-items:center">
+            <button onclick="editProductById(${p.id})" class="btn btn-g btn-xs"><i class="fas fa-edit"></i> Modifier</button>
+            <button onclick='openDeleteProduct(${p.id}, ${JSON.stringify(String(p.name||""))})' class="btn btn-r" style="font-size:12px;padding:5px 12px;font-weight:700;letter-spacing:.3px"><i class="fas fa-trash-alt"></i> Supprimer</button>
         </div></td>
     </tr>`).join('');
 }
@@ -2893,11 +2992,27 @@ async function loadCitiesForProduct(){
     const cs=document.getElementById('np-city');
     cs.innerHTML='<option value="">Chargement…</option>';
     cs.disabled=true;
+    /* Masque l'historique et le compteur quand on change de société */
+    const wrap=document.getElementById('np-city-history');
+    if(wrap) wrap.style.display='none';
+    const cw=document.getElementById('np-city-count-wrap');
+    if(cw) cw.style.display='none';
     if(!cid){ cs.innerHTML='<option value="">— Choisir société d\'abord —</option>'; return; }
     const cities=await api('get_cities_by_company',{company_id:cid});
     if(!cities.length){ cs.innerHTML='<option value="">Aucun magasin pour cette société</option>'; return; }
     cs.innerHTML='<option value="">— Sélectionner le magasin —</option>' + cities.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
     cs.disabled=false;
+}
+/* Déclenché quand l'utilisateur choisit une ville dans le modal */
+function onCitySelectForProduct(){
+    const city_id=document.getElementById('np-city').value;
+    if(city_id) loadCityProductHistory(city_id);
+    else {
+        const wrap=document.getElementById('np-city-history');
+        if(wrap) wrap.style.display='none';
+        const cw=document.getElementById('np-city-count-wrap');
+        if(cw) cw.style.display='none';
+    }
 }
 function bindProductImagePreview(inputId, previewId){
     const input=document.getElementById(inputId);
@@ -2937,7 +3052,7 @@ async function uploadProductImage(productId, file){
     });
     return r.json();
 }
-async function addProduct(){
+async function addProduct(force=false){
     const company_id=document.getElementById('np-company').value;
     const city_id=document.getElementById('np-city').value;
     const name=document.getElementById('np-name').value.trim();
@@ -2949,16 +3064,76 @@ async function addProduct(){
     if(!city_id){ toast('Sélectionnez un magasin / ville !','error'); document.getElementById('np-city').focus(); return; }
     if(!name){ toast('Nom du produit requis','error'); return; }
     if(!price||parseFloat(price)<0){ toast('Prix requis','error'); return; }
-    const r=await api('add_product',{},{company_id,city_id,name,category,price,alert_quantity});
+    const btn=document.getElementById('btn-add-prod');
+    btn.disabled=true; btn.innerHTML='<i class="fas fa-spinner fa-spin"></i> Création…';
+    const r=await api('add_product',{},{company_id,city_id,name,category,price,alert_quantity,force:force?1:0});
+    btn.disabled=false; btn.innerHTML='<i class="fas fa-save"></i> Créer le produit';
+    if(r.doublon){
+        /* Doublon détecté — demande confirmation avant de forcer */
+        confirm2(`⚠️ Doublon détecté !\n\n${r.msg}\n\nVoulez-vous quand même créer ce produit ?`, ()=>addProduct(true));
+        return;
+    }
     if(r.ok){
         if(imageFile){
             const up=await uploadProductImage(r.id, imageFile);
             if(!up.ok) toast(up.msg||'Image non enregistrée','warn');
         }
-        toast('Produit créé !','success',`${name} — Stock initialisé à 0`); closeModal('modal-add-prod'); loadProducts();
-        document.getElementById('np-name').value=''; document.getElementById('np-price').value=''; document.getElementById('np-category').value=''; document.getElementById('np-alert').value='5'; document.getElementById('np-image').value=''; setProductImagePreview('np-image-preview', null);
+        toast('Produit créé !','success',`${name} — Stock initialisé à 0`);
+        document.getElementById('np-name').value='';
+        document.getElementById('np-price').value='';
+        document.getElementById('np-category').value='';
+        document.getElementById('np-alert').value='5';
+        document.getElementById('np-image').value='';
+        setProductImagePreview('np-image-preview', null);
+        loadProducts();
+        loadCityProductHistory(city_id);
     }
     else toast(r.msg||'Erreur création produit','error');
+}
+function animateCount(el, target){
+    if(!el) return;
+    const start=parseInt(el.textContent)||0;
+    if(start===target){ el.textContent=target; return; }
+    const step=Math.ceil(Math.abs(target-start)/12);
+    let cur=start;
+    const tick=()=>{
+        cur+=(target>cur?1:-1)*step;
+        if((target>start&&cur>=target)||(target<start&&cur<=target)) cur=target;
+        el.textContent=cur;
+        el.style.transform='scale(1.12)';
+        setTimeout(()=>{ el.style.transform='scale(1)'; },120);
+        if(cur!==target) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+}
+async function loadCityProductHistory(city_id){
+    if(!city_id) return;
+    const wrap=document.getElementById('np-city-history');
+    const list=document.getElementById('np-city-history-list');
+    const counter=document.getElementById('np-city-count');
+    const countWrap=document.getElementById('np-city-count-wrap');
+    if(!wrap||!list) return;
+    list.innerHTML='<div style="color:var(--muted);font-size:12px;padding:6px 0"><i class="fas fa-spinner fa-spin"></i> Chargement…</div>';
+    wrap.style.display='block';
+    if(countWrap) countWrap.style.display='flex';
+    const data=await api('get_products',{city_id,q:'',company_id:0});
+    const n=Array.isArray(data)?data.length:0;
+    animateCount(counter, n);
+    if(!n){
+        list.innerHTML='<div style="color:var(--muted);font-size:12px;padding:6px 0"><i class="fas fa-inbox"></i> Aucun produit pour ce magasin.</div>';
+        return;
+    }
+    list.innerHTML=data.map(p=>`
+        <div style="display:flex;align-items:center;gap:10px;background:rgba(255,255,255,0.04);border-radius:8px;padding:7px 10px">
+            <div style="width:32px;height:32px;border-radius:6px;overflow:hidden;flex-shrink:0;background:rgba(255,255,255,0.07);display:flex;align-items:center;justify-content:center">
+                ${p.image_url?`<img src="${esc(p.image_url)}" style="width:100%;height:100%;object-fit:cover" alt="">`:'<i class="fas fa-box" style="color:var(--muted);font-size:13px"></i>'}
+            </div>
+            <div style="flex:1;min-width:0">
+                <div style="font-weight:700;font-size:13px;color:var(--light);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(p.name)}</div>
+                <div style="font-size:11px;color:var(--muted)">${esc(p.category||'—')} · <span style="color:var(--gold);font-weight:700">${formatPrice(p.price)}</span></div>
+            </div>
+            <span style="font-size:11px;color:var(--cyan);background:rgba(6,182,212,0.1);padding:2px 8px;border-radius:10px;flex-shrink:0">#${p.id}</span>
+        </div>`).join('');
 }
 function editProduct(p){
     document.getElementById('ep-id').value=p.id;
@@ -3006,12 +3181,41 @@ async function removeProductImage(){
         toast(data.msg||'Suppression impossible','error');
     }
 }
-function deleteProduct(id,name){
-    confirm2(`Supprimer le produit "${name}" ? Cette action est irréversible.`,async()=>{
-        const r=await api('delete_product',{id});
-        if(r.ok){ toast('Produit supprimé','warn'); loadProducts(); }
-    });
+let __delProdId=null, __delProdName='';
+function openDeleteProduct(id, name){
+    __delProdId=id; __delProdName=name;
+    document.getElementById('del-prod-name').textContent=name;
+    document.getElementById('del-prod-confirm-hint').textContent=name;
+    document.getElementById('del-prod-input').value='';
+    const btn=document.getElementById('btn-confirm-delete-prod');
+    btn.disabled=true; btn.style.opacity='.4'; btn.style.cursor='not-allowed';
+    openModal('modal-delete-prod');
+    setTimeout(()=>document.getElementById('del-prod-input').focus(),200);
 }
+function checkDeleteConfirm(){
+    const val=document.getElementById('del-prod-input').value;
+    const btn=document.getElementById('btn-confirm-delete-prod');
+    const ok=val.trim().toLowerCase()===__delProdName.trim().toLowerCase();
+    btn.disabled=!ok;
+    btn.style.opacity=ok?'1':'.4';
+    btn.style.cursor=ok?'pointer':'not-allowed';
+}
+async function confirmDeleteProduct(){
+    if(!__delProdId) return;
+    const btn=document.getElementById('btn-confirm-delete-prod');
+    btn.disabled=true; btn.innerHTML='<i class="fas fa-spinner fa-spin"></i> Suppression…';
+    const r=await api('delete_product',{id:__delProdId});
+    if(r.ok){
+        toast(`"${__delProdName}" supprimé`,'warn');
+        closeModal('modal-delete-prod');
+        loadProducts();
+    } else {
+        toast(r.msg||'Erreur lors de la suppression','error');
+        btn.disabled=false; btn.innerHTML='<i class="fas fa-trash-alt"></i> Supprimer définitivement';
+    }
+}
+/* Kept for backward compat (used elsewhere e.g. history cards) */
+function deleteProduct(id,name){ openDeleteProduct(id,name); }
 
 /* ═══════════════════════════════════════════════
    🏷️ PROMOTIONS

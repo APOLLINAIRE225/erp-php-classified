@@ -12,6 +12,7 @@ error_reporting(E_ALL);
 if(session_status() === PHP_SESSION_NONE) session_start();
 
 require_once APP_ROOT . '/app/core/DB.php';
+require_once PROJECT_ROOT . '/messaging/app_alerts.php';
 use App\Core\DB;
 
 $pdo = DB::getConnection();
@@ -419,6 +420,25 @@ function sendEmployeeNotification($pdo, $employee_id, $type, $message) {
     }
 }
 
+function notifyAttendanceAlert(PDO $pdo, array $employee, string $eventType, string $message, array $meta = []): void {
+    try {
+        appAlertNotifyRoles($pdo, appAlertHrRoles(), [
+            'title' => $eventType === 'attendance_failed' ? 'Tentative de pointage échouée' : 'Pointage employé',
+            'body' => mb_strimwidth($message, 0, 180, '…', 'UTF-8'),
+            'url' => project_url('hr/employee_portal.php'),
+            'tag' => 'attendance-' . ($eventType === 'attendance_failed' ? 'fail' : 'ok') . '-' . ((int)($employee['id'] ?? 0)),
+            'unread' => 1,
+        ], [
+            'event_type' => $eventType,
+            'employee_id' => (int)($employee['id'] ?? 0),
+            'employee_name' => (string)($employee['full_name'] ?? ''),
+            'meta' => $meta,
+        ]);
+    } catch (Throwable $e) {
+        error_log('[ATTENDANCE ALERT] ' . $e->getMessage());
+    }
+}
+
 /* ================= GET EMPLOYEE INFO ================= */
 $stmt = $pdo->prepare("
     SELECT e.*, c.name as category_name, p.title as position_title
@@ -702,6 +722,24 @@ if(isset($_POST['action'])){
                 'minutes_late' => $penalty_data['minutes_late'],
                 'penalty' => number_format($penalty_data['penalty_amount'], 0, ',', ' ')
             ]);
+            notifyAttendanceAlert(
+                $pdo,
+                $employee,
+                'attendance_success',
+                sprintf(
+                    '%s a pointé son arrivée à %s (%s)%s',
+                    $employee['full_name'],
+                    substr($time, 0, 5),
+                    $penalty_data['status'],
+                    $penalty_data['minutes_late'] > 0 ? ' · retard ' . $penalty_data['minutes_late'] . ' min' : ''
+                ),
+                [
+                    'phase' => 'check_in',
+                    'status' => $penalty_data['status'],
+                    'minutes_late' => (int)$penalty_data['minutes_late'],
+                    'distance_meters' => round((float)$distance, 2),
+                ]
+            );
 
             // Compter les retards du mois
             $stmt = $pdo->prepare("
@@ -859,6 +897,24 @@ if(isset($_POST['action'])){
                 'time' => substr($time, 0, 5),
                 'hours_worked' => $hours_worked . 'h'
             ]);
+            notifyAttendanceAlert(
+                $pdo,
+                $employee,
+                'attendance_success',
+                sprintf(
+                    '%s a pointé son départ à %s · %.2fh travaillées',
+                    $employee['full_name'],
+                    substr($time, 0, 5),
+                    $hours_worked
+                ),
+                [
+                    'phase' => 'check_out',
+                    'hours_worked' => (float)$hours_worked,
+                    'distance_meters' => round((float)($checkOutDistance ?? 0), 2),
+                    'overtime_hours' => (float)($overtime_data['hours'] ?? 0),
+                    'overtime_amount' => (float)($overtime_data['amount'] ?? 0),
+                ]
+            );
 
             $response['msg'] = "✅ Départ enregistré à " . substr($time,0,5) . 
                               "<br>Heures travaillées: {$hours_worked}h" . 
@@ -955,6 +1011,23 @@ if(isset($_POST['action'])){
         }
 
     }catch(Throwable $e){
+        if (in_array($_POST['action'] ?? '', ['check_in', 'check_out'], true) && !empty($employee)) {
+            notifyAttendanceAlert(
+                $pdo,
+                $employee,
+                'attendance_failed',
+                sprintf(
+                    '%s a échoué son %s · %s',
+                    $employee['full_name'],
+                    ($_POST['action'] ?? '') === 'check_out' ? 'pointage départ' : 'pointage arrivée',
+                    preg_replace('/\s+/', ' ', trim($e->getMessage()))
+                ),
+                [
+                    'phase' => (string)($_POST['action'] ?? ''),
+                    'ip' => (string)($_SERVER['REMOTE_ADDR'] ?? ''),
+                ]
+            );
+        }
         $response['msg'] = $e->getMessage();
     }
 

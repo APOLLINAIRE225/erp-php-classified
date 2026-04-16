@@ -15,6 +15,7 @@ ini_set('display_errors', 0);
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 
 require_once APP_ROOT . '/app/core/DB.php';
+require_once PROJECT_ROOT . '/messaging/app_alerts.php';
 use App\Core\DB;
 
 $pdo = DB::getConnection();
@@ -1461,6 +1462,27 @@ if($_SERVER['REQUEST_METHOD']==='POST' && !empty($_POST['action'])){
             $pdo->prepare("UPDATE abandoned_carts SET status='recovered', updated_at=NOW() WHERE client_id=? AND company_id=? AND city_id=? AND status='active'")
                 ->execute([$client_id, $coid, $ciid]);
             $pdo->commit();
+            try {
+                $clientLabel = trim((string)($_SESSION['client_name'] ?? 'Client #' . $client_id));
+                $body = sprintf(
+                    'Commande %s · %s · %s CFA',
+                    $onum,
+                    $clientLabel,
+                    number_format((float)$total, 0, '', '.')
+                );
+                appAlertNotifyRoles($pdo, appAlertOrderRoles(), [
+                    'title' => 'Nouvelle commande client',
+                    'body' => $body,
+                    'url' => project_url('orders/admin_orders.php?highlight_order=' . $oid),
+                    'tag' => 'order-' . $oid,
+                    'unread' => 1,
+                ], [
+                    'event_type' => 'new_order',
+                    'event_key' => 'order-created-' . $oid,
+                ]);
+            } catch (Throwable $e) {
+                error_log('[ORDER ALERT] ' . $e->getMessage());
+            }
             echo json_encode(['success'=>true,'order_number'=>$onum,'total'=>$total,'order_id'=>$oid,'earned_points'=>$earnedPoints,'vip_status'=>$profile['vip_status']]);
         }catch(Exception $e){
             $pdo->rollBack();
